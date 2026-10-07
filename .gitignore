@@ -1,0 +1,43 @@
+# Private/local project material
+no-public/
+AGENTS.md
+
+# Rust build output and generated reports
+/target/
+**/target/
+Disk_*_Report/
+*_Report/
+*.profraw
+*.pdb
+
+# Environment files and local configuration
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+*.secrets
+*.credentials
+*.key
+*.pem
+.aws/
+.codex/
+.agents/
+
+# Rust/editor/tool caches
+.cargo/
+.rustc_info.json
+rust-project.json
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Test and coverage caches
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage/
+__pycache__/
