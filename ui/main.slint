@@ -1,124 +1,243 @@
-import { Button, LineEdit, ProgressIndicator, ScrollView } from "std-widgets.slint";
+import { Button, LineEdit, ScrollView } from "std-widgets.slint";
 
-export struct CategoryRow {
-    name: string,
-    size: string,
-    files: string,
-    percent: string,
+export struct CategoryRow { name: string, size: string, files: string, percent: string }
+export struct TreeRow { name: string, kind: string, size: string, files: string, indent: length }
+export struct Tile { x: float, y: float, width: float, height: float, label: string, size: string, color: color }
+
+component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    callback clicked();
+    height: 40px;
+    min-width: 112px;
+    background: primary ? #2563eb : #e4eaf2;
+    border-radius: 8px;
+    Text {
+        text: label;
+        color: primary ? #ffffff : #24334b;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea { clicked => { root.clicked(); } }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback activate();
+    height: 38px;
+    background: selected ? #2a3d57 : #172337;
+    border-radius: 8px;
+    Text { text: label; color: selected ? #ffffff : #bdc8d8; font-size: 13px; vertical-alignment: center; x: 12px; }
+    TouchArea { clicked => { root.activate(); } }
 }
 
 export component MainWindow inherits Window {
     title: "Disk Analyzer";
-    min-width: 760px;
-    min-height: 560px;
-    preferred-width: 980px;
-    preferred-height: 700px;
-    background: #f4f6fa;
-
+    min-width: 900px;
+    min-height: 620px;
+    preferred-width: 1180px;
+    preferred-height: 800px;
+    background: #eef2f7;
     in-out property <string> root-path: ".";
-    in-out property <string> status-text: "Выберите папку и нажмите «Анализировать»";
+    in-out property <string> status-text: "Ожидание анализа";
     in-out property <string> disk-text: "Данные о диске появятся после анализа";
     in-out property <string> files-text: "Файлы: —";
     in-out property <string> elapsed-text: "Время: —";
     in-out property <string> progress-text: "Ожидание";
     in-out property <int> progress-value: 0;
+    in-out property <int> active-page: 0;
     in-out property <[CategoryRow]> category-rows: [];
+    in-out property <[TreeRow]> tree-rows: [];
+    in-out property <[Tile]> tiles: [];
+    in-out property <string> scanned-root: "";
     callback choose-folder();
     callback start-analysis();
     callback open-report();
 
-    VerticalLayout {
-        padding: 26px;
-        spacing: 18px;
-        Text { text: "Disk Analyzer"; font-size: 30px; font-weight: 700; color: #14213d; }
-        Text { text: "Анализ занятого места по папкам и типам файлов"; color: #64708a; font-size: 15px; }
-
+    HorizontalLayout {
+        padding: 7px;
+        spacing: 12px;
         Rectangle {
-            background: white;
-            border-radius: 12px;
-            border-width: 1px;
-            border-color: #e1e6ef;
+            width: 212px;
+            background: #172337;
+            border-radius: 18px;
             VerticalLayout {
                 padding: 16px;
-                spacing: 10px;
-                Text { text: "Папка для анализа"; font-size: 14px; font-weight: 600; color: #34415b; }
+                spacing: 12px;
                 HorizontalLayout {
-                    spacing: 8px;
-                    LineEdit { text <=> root-path; placeholder-text: "Путь к папке"; }
-                    Button { text: "Обзор…"; clicked => { root.choose-folder(); } }
-                }
-                HorizontalLayout {
-                    spacing: 10px;
-                    Button {
-                        text: "Анализировать";
-                        primary: true;
-                        clicked => { root.start-analysis(); }
+                    width: 36px; height: 36px;
+                    Rectangle { background: #375b91; border-radius: 11px; }
+                    Text { text: "DA"; color: #ffffff; font-size: 14px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                    VerticalLayout { spacing: 1px;
+                        Text { text: "Disk Analyzer"; color: #f5f7fb; font-size: 16px; font-weight: 700; }
+                        Text { text: "АНАЛИЗ ДИСКА"; color: #9aa9be; font-size: 9px; }
                     }
-                    Button { text: "Открыть отчёт"; clicked => { root.open-report(); } }
-                    Text { text: root.status-text; color: #64708a; vertical-alignment: center; }
                 }
-                ProgressIndicator { progress: root.progress-value / 100.0; }
-                Text { text: root.progress-text; color: #64708a; font-size: 12px; }
+                Rectangle { height: 1px; background: #2c394c; }
+                Text { text: "РАБОЧЕЕ ПРОСТРАНСТВО"; color: #8594aa; font-size: 9px; }
+                NavItem { label: "Обзор"; selected: root.active-page == 0; activate => { root.active-page = 0; } }
+                NavItem { label: "Карта и дерево"; selected: root.active-page == 1; activate => { root.active-page = 1; } }
+                Rectangle { vertical-stretch: 1; background: transparent; }
+                Rectangle { height: 1px; background: #2c394c; }
+                Text { text: "СОСТОЯНИЕ"; color: #8594aa; font-size: 9px; }
+                Text { text: root.status-text; color: #e1e8f2; font-size: 11px; wrap: word-wrap; }
+                Rectangle {
+                    height: 6px; background: #33445d; border-radius: 3px; clip: true;
+                    HorizontalLayout {
+                        padding: 0px;
+                        Rectangle { width: parent.width * root.progress-value / 100; height: parent.height; background: #4f91f7; border-radius: 3px; }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                }
+                Text { text: root.progress-text; color: #aab7c9; font-size: 10px; wrap: word-wrap; }
+                Rectangle { height: 1px; background: #2c394c; }
+                Text { text: "DISK ANALYZER  ·  0.1.0"; color: #77879e; font-size: 9px; }
             }
         }
 
-        HorizontalLayout {
-            spacing: 12px;
-            Rectangle { background: white; border-radius: 10px; border-width: 1px; border-color: #e1e6ef;
-                VerticalLayout { padding: 14px; spacing: 6px;
-                    Text { text: "Диск"; color: #64708a; }
-                    Text { text: root.disk-text; color: #14213d; font-size: 14px; wrap: word-wrap; }
+        if root.active-page == 0: VerticalLayout {
+            spacing: 14px;
+            HorizontalLayout {
+                VerticalLayout { spacing: 3px;
+                    Text { text: "Обзор хранилища"; color: #172337; font-size: 26px; font-weight: 700; }
+                    Text { text: "Сводка занятого пространства и типов файлов"; color: #65738a; font-size: 13px; }
+                }
+                ActionButton { label: "Открыть отчёт"; clicked => { root.open-report(); } }
+            }
+            Rectangle {
+                background: #ffffff; border-radius: 14px; border-width: 1px; border-color: #dce3ed;
+                VerticalLayout { padding: 14px; spacing: 9px;
+                    Text { text: "ПАПКА АНАЛИЗА"; color: #52627b; font-size: 10px; font-weight: 700; }
+                    HorizontalLayout { spacing: 8px;
+                        LineEdit { text <=> root.root-path; placeholder-text: "Путь к папке"; horizontal-stretch: 1; }
+                        ActionButton { label: "Обзор…"; clicked => { root.choose-folder(); } }
+                        ActionButton { label: "Анализировать"; primary: true; clicked => { root.start-analysis(); } }
+                    }
                 }
             }
-            Rectangle { background: white; border-radius: 10px; border-width: 1px; border-color: #e1e6ef;
-                VerticalLayout { padding: 14px; spacing: 6px;
-                    Text { text: "Обработано"; color: #64708a; }
-                    Text { text: root.files-text; color: #14213d; font-size: 16px; }
-                }
-            }
-            Rectangle { background: white; border-radius: 10px; border-width: 1px; border-color: #e1e6ef;
-                VerticalLayout { padding: 14px; spacing: 6px;
-                    Text { text: "Длительность"; color: #64708a; }
-                    Text { text: root.elapsed-text; color: #14213d; font-size: 16px; }
-                }
-            }
-        }
-
-        Rectangle {
-            background: white;
-            border-radius: 12px;
-            border-width: 1px;
-            border-color: #e1e6ef;
-            VerticalLayout {
-                padding: 16px;
+            HorizontalLayout {
                 spacing: 10px;
-                HorizontalLayout {
-                    Text { text: "Категории"; font-size: 18px; font-weight: 700; color: #14213d; }
-                    Text { text: "Занятое место по расширениям"; color: #64708a; horizontal-alignment: right; }
+                Rectangle { background: #ffffff; border-radius: 12px; border-width: 1px; border-color: #dce3ed;
+                    VerticalLayout { padding: 13px; spacing: 7px;
+                        Text { text: "ДИСК"; color: #65738a; font-size: 10px; font-weight: 700; }
+                        Text { text: root.disk-text; color: #172337; font-size: 14px; wrap: word-wrap; }
+                    }
                 }
-                HorizontalLayout {
-                    Text { text: "Категория"; width: 34%; color: #64708a; font-size: 12px; }
-                    Text { text: "Размер"; width: 23%; color: #64708a; font-size: 12px; }
-                    Text { text: "Файлов"; width: 18%; color: #64708a; font-size: 12px; }
-                    Text { text: "Доля"; horizontal-alignment: right; color: #64708a; font-size: 12px; }
+                Rectangle { background: #ffffff; border-radius: 12px; border-width: 1px; border-color: #dce3ed;
+                    VerticalLayout { padding: 13px; spacing: 7px;
+                        Text { text: "ФАЙЛЫ"; color: #65738a; font-size: 10px; font-weight: 700; }
+                        Text { text: root.files-text; color: #172337; font-size: 14px; wrap: word-wrap; }
+                    }
                 }
-                Rectangle { height: 1px; background: #e8ecf2; }
-                if root.category-rows.length == 0: Text {
-                    text: "Здесь появится разбивка после завершения анализа.";
-                    color: #8290a8;
-                    height: 90px;
-                    vertical-alignment: center;
-                    horizontal-alignment: center;
+                Rectangle { background: #ffffff; border-radius: 12px; border-width: 1px; border-color: #dce3ed;
+                    VerticalLayout { padding: 13px; spacing: 7px;
+                        Text { text: "ВРЕМЯ АНАЛИЗА"; color: #65738a; font-size: 10px; font-weight: 700; }
+                        Text { text: root.elapsed-text; color: #172337; font-size: 14px; }
+                    }
                 }
-                for row in root.category-rows: HorizontalLayout {
-                    height: 34px;
-                    Text { text: row.name; width: 34%; color: #26344f; }
-                    Text { text: row.size; width: 23%; color: #26344f; }
-                    Text { text: row.files; width: 18%; color: #64708a; }
-                    Text { text: row.percent; horizontal-alignment: right; color: #2463eb; }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                background: #ffffff; border-radius: 14px; border-width: 1px; border-color: #dce3ed;
+                VerticalLayout { padding: 16px; spacing: 10px;
+                    HorizontalLayout {
+                        Text { text: "Категории файлов"; color: #172337; font-size: 17px; font-weight: 700; }
+                        Text { text: "Размер распределён по типам"; color: #65738a; horizontal-alignment: right; }
+                    }
+                    HorizontalLayout {
+                        Text { text: "КАТЕГОРИЯ"; width: 34%; color: #65738a; font-size: 10px; font-weight: 700; }
+                        Text { text: "РАЗМЕР"; width: 23%; color: #65738a; font-size: 10px; font-weight: 700; }
+                        Text { text: "ФАЙЛОВ"; width: 18%; color: #65738a; font-size: 10px; font-weight: 700; }
+                        Text { text: "ДОЛЯ"; horizontal-alignment: right; color: #65738a; font-size: 10px; font-weight: 700; }
+                    }
+                    Rectangle { height: 1px; background: #e8edf3; }
+                    ScrollView {
+                        VerticalLayout {
+                            width: 100%;
+                            if root.category-rows.length == 0: Text {
+                                text: "Выберите папку и запустите анализ, чтобы увидеть разбивку.";
+                                color: #65738a; height: 100px; vertical-alignment: center; horizontal-alignment: center;
+                            }
+                            for row in root.category-rows: HorizontalLayout {
+                                height: 34px;
+                                Text { text: row.name; width: 34%; color: #26344c; }
+                                Text { text: row.size; width: 23%; color: #26344c; }
+                                Text { text: row.files; width: 18%; color: #53627a; }
+                                Text { text: row.percent; horizontal-alignment: right; color: #2563c9; font-weight: 600; }
+                            }
+                        }
+                    }
                 }
             }
         }
-        Text { text: "Папки, к которым нет доступа, учитываются как пропущенные."; color: #8290a8; font-size: 12px; }
+
+        if root.active-page == 1: VerticalLayout {
+            spacing: 14px;
+            HorizontalLayout {
+                VerticalLayout { spacing: 3px;
+                    Text { text: "Карта и дерево"; color: #172337; font-size: 26px; font-weight: 700; }
+                    Text { text: root.scanned-root == "" ? "Выполните анализ, чтобы построить карту файлов" : root.scanned-root; color: #65738a; font-size: 12px; }
+                }
+                ActionButton { label: "Открыть отчёт"; clicked => { root.open-report(); } }
+            }
+            Rectangle {
+                height: 270px; background: #ffffff; border-radius: 14px; border-width: 1px; border-color: #dce3ed;
+                VerticalLayout { padding: 14px; spacing: 8px;
+                    HorizontalLayout {
+                        Text { text: "Treemap"; color: #172337; font-size: 16px; font-weight: 700; }
+                        Text { text: "Площадь плитки соответствует размеру элемента"; color: #65738a; horizontal-alignment: right; font-size: 11px; }
+                    }
+                    Rectangle {
+                        background: #f3f6fa; border-radius: 9px; clip: true;
+                        if root.tiles.length == 0: Text { text: "Карта появится после анализа"; color: #65738a; horizontal-alignment: center; vertical-alignment: center; }
+                        for tile in root.tiles: Rectangle {
+                            x: tile.x * parent.width; y: tile.y * parent.height; width: tile.width * parent.width; height: tile.height * parent.height;
+                            background: tile.color; border-radius: 4px; border-width: 1px; border-color: #ffffff;
+                            if tile.width * parent.width > 72px && tile.height * parent.height > 38px: VerticalLayout {
+                                padding: 6px; spacing: 2px;
+                                Text { text: tile.label; color: #172337; font-size: 11px; font-weight: 600; overflow: elide; }
+                                Text { text: tile.size; color: #34445b; font-size: 10px; }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1; background: #ffffff; border-radius: 14px; border-width: 1px; border-color: #dce3ed;
+                VerticalLayout { padding: 14px; spacing: 8px;
+                    HorizontalLayout {
+                        Text { text: "Дерево файлов"; color: #172337; font-size: 16px; font-weight: 700; }
+                        Text { text: "Папки и файлы по размеру"; color: #65738a; horizontal-alignment: right; font-size: 11px; }
+                    }
+                    Rectangle {
+                        height: 28px; background: #f3f6fa; border-radius: 6px;
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 8px;
+                            Text { text: "ИМЯ"; horizontal-stretch: 1; color: #53627a; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "ТИП"; width: 90px; color: #53627a; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "РАЗМЕР"; width: 110px; color: #53627a; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "ФАЙЛОВ"; width: 80px; color: #53627a; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                        }
+                    }
+                    ScrollView {
+                        VerticalLayout {
+                            width: 100%;
+                            if root.tree-rows.length == 0: Text { text: "Дерево появится после завершения анализа."; color: #65738a; height: 70px; vertical-alignment: center; horizontal-alignment: center; }
+                            for row in root.tree-rows: Rectangle {
+                                height: 30px;
+                                background: transparent;
+                                Text { text: row.name; x: row.indent; width: parent.width - row.indent - 290px; color: #26344c; vertical-alignment: center; overflow: elide; }
+                                Text { text: row.kind; x: parent.width - 290px; width: 90px; color: #65738a; vertical-alignment: center; }
+                                Text { text: row.size; x: parent.width - 200px; width: 110px; color: #26344c; vertical-alignment: center; }
+                                Text { text: row.files; x: parent.width - 90px; width: 80px; color: #53627a; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

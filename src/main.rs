@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::io;
 use std::path::PathBuf;
@@ -142,6 +143,13 @@ fn run_gui() -> io::Result<()> {
             CategoryRow,
         >::new(
         )))));
+        window.set_tree_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(Vec::<
+            TreeRow,
+        >::new(
+        )))));
+        window.set_tiles(ModelRc::from(std::rc::Rc::new(VecModel::from(
+            Vec::<Tile>::new(),
+        ))));
 
         let weak = scan_ui.clone();
         let report_dir = default_report_dir(&root);
@@ -238,6 +246,7 @@ fn display_report(window: &MainWindow, report: &AnalysisReport, report_dir: &std
     window.set_elapsed_text(format_duration(report.elapsed).into());
     window.set_progress_value(100);
     window.set_progress_text(format!("Обработано {} файлов", report.processed_files).into());
+    window.set_scanned_root(report.root.to_string_lossy().into_owned().into());
     let total = report.files.iter().map(|file| file.size).sum::<u64>();
     let mut categories: Vec<_> = report.categories.iter().collect();
     categories.sort_by(|(_, a), (_, b)| b.bytes.cmp(&a.bytes));
@@ -255,6 +264,237 @@ fn display_report(window: &MainWindow, report: &AnalysisReport, report_dir: &std
         })
         .collect::<Vec<_>>();
     window.set_category_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
+
+    let mut tree = TreeNode::directory(report.root.file_name().map_or_else(
+        || report.root.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    ));
+    for file in &report.files {
+        let Ok(relative) = file.path.strip_prefix(&report.root) else {
+            continue;
+        };
+        let components: Vec<_> = relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        if components.is_empty() {
+            continue;
+        }
+        let mut current = &mut tree;
+        for (index, part) in components.iter().enumerate() {
+            let last = index + 1 == components.len();
+            current = current.children.entry(part.clone()).or_insert_with(|| {
+                if last {
+                    TreeNode::file(part.clone())
+                } else {
+                    TreeNode::directory(part.clone())
+                }
+            });
+            current.bytes = current
+                .bytes
+                .saturating_add(if last { file.size } else { 0 });
+            current.files = current.files.saturating_add(if last { 1 } else { 0 });
+        }
+        let mut parent = &mut tree;
+        parent.bytes = parent.bytes.saturating_add(file.size);
+        parent.files = parent.files.saturating_add(1);
+        for part in components.iter().take(components.len().saturating_sub(1)) {
+            parent = parent
+                .children
+                .get_mut(part)
+                .expect("tree path was just inserted");
+            parent.bytes = parent.bytes.saturating_add(file.size);
+            parent.files = parent.files.saturating_add(1);
+        }
+    }
+    let mut rows = Vec::new();
+    flatten_tree(&tree, 0, &mut rows, 1200);
+    window.set_tree_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
+    window.set_tiles(ModelRc::from(std::rc::Rc::new(VecModel::from(
+        make_treemap(&report.files),
+    ))));
+}
+
+#[derive(Default)]
+struct TreeNode {
+    name: String,
+    is_file: bool,
+    bytes: u64,
+    files: u64,
+    children: BTreeMap<String, TreeNode>,
+}
+
+impl TreeNode {
+    fn directory(name: String) -> Self {
+        Self {
+            name,
+            ..Self::default()
+        }
+    }
+    fn file(name: String) -> Self {
+        Self {
+            name,
+            is_file: true,
+            ..Self::default()
+        }
+    }
+}
+
+fn flatten_tree(node: &TreeNode, depth: usize, rows: &mut Vec<TreeRow>, limit: usize) {
+    if rows.len() >= limit {
+        return;
+    }
+    rows.push(TreeRow {
+        name: SharedString::from(node.name.as_str()),
+        kind: SharedString::from(if node.is_file {
+            "Файл"
+        } else {
+            "Папка"
+        }),
+        size: SharedString::from(format_size(node.bytes)),
+        files: SharedString::from(node.files.to_string()),
+        indent: (depth * 16) as f32,
+    });
+    let mut children: Vec<_> = node.children.values().collect();
+    children.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.name.cmp(&b.name)));
+    for child in children {
+        flatten_tree(child, depth + 1, rows, limit);
+    }
+}
+
+fn make_treemap(files: &[disk_analyzer::FileEntry]) -> Vec<Tile> {
+    const MAX_TILES: usize = 60;
+    const COLORS: [(u8, u8, u8); 8] = [
+        (183, 211, 247),
+        (190, 226, 218),
+        (250, 215, 173),
+        (222, 207, 246),
+        (248, 193, 196),
+        (194, 220, 237),
+        (238, 221, 168),
+        (205, 220, 198),
+    ];
+    let mut sorted: Vec<_> = files.iter().collect();
+    sorted.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
+    let mut items: Vec<(String, u64)> = sorted
+        .iter()
+        .take(MAX_TILES - 1)
+        .map(|file| {
+            (
+                file.path.file_name().map_or_else(
+                    || file.path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                ),
+                file.size.max(1),
+            )
+        })
+        .collect();
+    let other_size: u64 = sorted
+        .iter()
+        .skip(MAX_TILES - 1)
+        .map(|file| file.size)
+        .sum();
+    if other_size > 0 {
+        items.push(("Остальные файлы".to_string(), other_size));
+    }
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let mut result = Vec::with_capacity(items.len());
+    let weights: Vec<u64> = items.iter().map(|(_, size)| *size).collect();
+    let colors = COLORS;
+    #[allow(clippy::too_many_arguments)]
+    fn subdivide(
+        items: &[(String, u64)],
+        weights: &[u64],
+        start: usize,
+        end: usize,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        output: &mut Vec<Tile>,
+        colors: &[(u8, u8, u8); 8],
+    ) {
+        if end <= start {
+            return;
+        }
+        if end - start == 1 {
+            let (r, g, b) = colors[start % colors.len()];
+            let (label, size) = &items[start];
+            output.push(Tile {
+                x,
+                y,
+                width: w,
+                height: h,
+                label: label.clone().into(),
+                size: format_size(*size).into(),
+                color: slint::Color::from_rgb_u8(r, g, b),
+            });
+            return;
+        }
+        let total: u64 = weights[start..end].iter().sum();
+        let mut accumulated = 0u64;
+        let mut middle = start + 1;
+        for (index, weight) in weights.iter().enumerate().take(end - 1).skip(start) {
+            accumulated = accumulated.saturating_add(*weight);
+            middle = index + 1;
+            if accumulated.saturating_mul(2) >= total {
+                break;
+            }
+        }
+        let ratio = (weights[start..middle].iter().sum::<u64>() as f32 / total.max(1) as f32)
+            .clamp(0.08, 0.92);
+        if w >= h {
+            let split = w * ratio;
+            subdivide(
+                items, weights, start, middle, x, y, split, h, output, colors,
+            );
+            subdivide(
+                items,
+                weights,
+                middle,
+                end,
+                x + split,
+                y,
+                w - split,
+                h,
+                output,
+                colors,
+            );
+        } else {
+            let split = h * ratio;
+            subdivide(
+                items, weights, start, middle, x, y, w, split, output, colors,
+            );
+            subdivide(
+                items,
+                weights,
+                middle,
+                end,
+                x,
+                y + split,
+                w,
+                h - split,
+                output,
+                colors,
+            );
+        }
+    }
+    let len = items.len();
+    subdivide(
+        &items,
+        &weights,
+        0,
+        len,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        &mut result,
+        &colors,
+    );
+    result
 }
 
 fn format_duration(duration: Duration) -> String {
