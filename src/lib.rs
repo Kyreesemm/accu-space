@@ -72,6 +72,14 @@ const CATEGORY_DEFINITIONS: &[(&str, &[&str])] = &[
     ),
     ("Шрифты", &["ttf", "otf", "woff", "woff2", "eot", "fon"]),
     ("Логи", &["log", "evtx", "trace"]),
+    (
+        "Разработка",
+        &[
+            "rs", "go", "ts", "js", "jsx", "tsx", "py", "c", "cpp", "h", "hpp",
+            "cs", "java", "kt", "kts", "swift", "rb", "php", "lock", "toml",
+            "yaml", "yml", "cmake", "vue", "svelte",
+        ],
+    ),
 ];
 
 /// Filesystem capacity information for the filesystem containing the scan root.
@@ -385,17 +393,75 @@ fn inspect_file(path: PathBuf) -> io::Result<FileEntry> {
 
 /// Return the category used by the original analyzer for a path.
 pub fn category_for_path(path: &Path) -> String {
+    let path_str = path.to_string_lossy().to_lowercase();
+
+    // 1. Steam / Games detection (SteamLibrary / steamapps gives exact game size)
+    if path_str.contains("steamlibrary") || path_str.contains("steamapps") {
+        return "Игры".to_string();
+    }
+
+    // 2. Development detection (directories, config files, source code extensions)
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+
+    if matches!(
+        file_name.as_str(),
+        "dockerfile"
+            | "containerfile"
+            | "makefile"
+            | "rakefile"
+            | "gemfile"
+            | "vagrantfile"
+            | "docker-compose.yml"
+            | "docker-compose.yaml"
+            | "container-compose.yml"
+            | ".gitignore"
+            | ".gitattributes"
+            | ".env"
+            | "cargo.toml"
+            | "cargo.lock"
+            | "package.json"
+            | "tsconfig.json"
+    )
+        || path_str.contains("node_modules")
+        || path_str.contains("/.git/")
+        || path_str.contains("\\.git\\")
+        || path_str.contains("target/debug")
+        || path_str.contains("target/release")
+        || path_str.contains(".vscode")
+        || path_str.contains(".idea")
+        || path_str.contains("venv")
+        || path_str.contains(".venv")
+        || path_str.contains("__pycache__")
+    {
+        return "Разработка".to_string();
+    }
+
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_lowercase();
+
+    let dev_extensions = [
+        "rs", "go", "ts", "js", "jsx", "tsx", "py", "c", "cpp", "h", "hpp",
+        "cs", "java", "kt", "kts", "swift", "rb", "php", "lock", "toml",
+        "yaml", "yml", "cmake", "vue", "svelte",
+    ];
+    if dev_extensions.iter().any(|&ext| ext == extension) {
+        return "Разработка".to_string();
+    }
+
     for (category, extensions) in CATEGORY_DEFINITIONS {
         if extensions.iter().any(|candidate| *candidate == extension) {
             return (*category).to_string();
         }
     }
-    if path.to_string_lossy().to_lowercase().contains("game") {
+
+    if path_str.contains("game") {
         "Игры".to_string()
     } else {
         "Другое".to_string()

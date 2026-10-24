@@ -296,9 +296,9 @@ export component MainWindow inherits Window {
                                 background: row.is-file ? #26292c : #2c3034;
                                 border-radius: 5px;
                                 Text { text: row.expandable ? (row.expanded ? "⌄" : "›") : ""; x: row.indent; width: 12px; color: #aeb7c0; vertical-alignment: center; horizontal-alignment: center; }
-                                Image { source: row.is-file ? @image-url("icons/file.svg") : @image-url("icons/folder.svg"); x: row.indent + 13px; y: 7px; width: 18px; height: 18px; image-fit: contain; }
-                                Text { text: row.name; x: row.indent + 36px; width: parent.width - row.indent - 326px; color: #e1e3e6; vertical-alignment: center; overflow: elide; }
-                                Rectangle { x: row.indent + 31px; y: 7px; width: 3px; height: 18px; background: row.color; border-radius: 2px; }
+                                Rectangle { x: row.indent + 13px; y: 7px; width: 3px; height: 18px; background: row.color; border-radius: 2px; }
+                                Image { source: row.is-file ? @image-url("icons/file.svg") : @image-url("icons/folder.svg"); x: row.indent + 19px; y: 7px; width: 18px; height: 18px; image-fit: contain; }
+                                Text { text: row.name; x: row.indent + 40px; width: parent.width - row.indent - 330px; color: #e1e3e6; vertical-alignment: center; overflow: elide; }
                                 Text { text: row.kind; x: parent.width - 290px; width: 90px; color: #a7abb1; vertical-alignment: center; }
                                 Text { text: row.size; x: parent.width - 200px; width: 110px; color: #e1e3e6; vertical-alignment: center; }
                                 Text { text: row.files; x: parent.width - 90px; width: 80px; color: #b2b6bc; vertical-alignment: center; }
