@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -198,6 +198,166 @@ pub struct AnalysisReport {
     pub processed_files: usize,
     pub skipped_files: usize,
     pub elapsed: Duration,
+}
+
+impl AnalysisReport {
+    /// Save report in a custom fast binary format (.dar).
+    pub fn save_binary<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let file = File::create(path)?;
+        let mut writer = BufWriter::new(file);
+
+        // Magic bytes: DAR1 (Disk Analyzer Report v1)
+        writer.write_all(b"DAR1")?;
+
+        // Root path
+        let root_str = self.root.to_string_lossy();
+        let root_bytes = root_str.as_bytes();
+        writer.write_all(&(root_bytes.len() as u32).to_le_bytes())?;
+        writer.write_all(root_bytes)?;
+
+        // Disk usage
+        writer.write_all(&self.disk_usage.total.to_le_bytes())?;
+        writer.write_all(&self.disk_usage.used.to_le_bytes())?;
+        writer.write_all(&self.disk_usage.free.to_le_bytes())?;
+
+        // Stats
+        writer.write_all(&(self.discovered_files as u64).to_le_bytes())?;
+        writer.write_all(&(self.processed_files as u64).to_le_bytes())?;
+        writer.write_all(&(self.skipped_files as u64).to_le_bytes())?;
+        writer.write_all(&self.elapsed.as_millis().to_le_bytes())?;
+
+        // Categories
+        writer.write_all(&(self.categories.len() as u32).to_le_bytes())?;
+        for (name, summary) in &self.categories {
+            let name_bytes = name.as_bytes();
+            writer.write_all(&(name_bytes.len() as u32).to_le_bytes())?;
+            writer.write_all(name_bytes)?;
+            writer.write_all(&summary.bytes.to_le_bytes())?;
+            writer.write_all(&summary.files.to_le_bytes())?;
+        }
+
+        // Files
+        writer.write_all(&(self.files.len() as u64).to_le_bytes())?;
+        for file_entry in &self.files {
+            let path_str = file_entry.path.to_string_lossy();
+            let path_bytes = path_str.as_bytes();
+            writer.write_all(&(path_bytes.len() as u32).to_le_bytes())?;
+            writer.write_all(path_bytes)?;
+            writer.write_all(&file_entry.size.to_le_bytes())?;
+            let cat_bytes = file_entry.category.as_bytes();
+            writer.write_all(&(cat_bytes.len() as u32).to_le_bytes())?;
+            writer.write_all(cat_bytes)?;
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Load report from a custom fast binary format (.dar).
+    pub fn load_binary<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+
+        // Magic bytes
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic)?;
+        if &magic != b"DAR1" {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Неверный формат бинарного отчёта (.dar)"));
+        }
+
+        // Root path
+        let mut len_buf = [0u8; 4];
+        reader.read_exact(&mut len_buf)?;
+        let root_len = u32::from_le_bytes(len_buf) as usize;
+        let mut root_bytes = vec![0u8; root_len];
+        reader.read_exact(&mut root_bytes)?;
+        let root = PathBuf::from(String::from_utf8_lossy(&root_bytes).into_owned());
+
+        // Disk usage
+        let mut u64_buf = [0u8; 8];
+        reader.read_exact(&mut u64_buf)?;
+        let total = u64::from_le_bytes(u64_buf);
+        reader.read_exact(&mut u64_buf)?;
+        let used = u64::from_le_bytes(u64_buf);
+        reader.read_exact(&mut u64_buf)?;
+        let free = u64::from_le_bytes(u64_buf);
+        let disk_usage = DiskUsage { total, used, free };
+
+        // Stats
+        reader.read_exact(&mut u64_buf)?;
+        let discovered_files = u64::from_le_bytes(u64_buf) as usize;
+        reader.read_exact(&mut u64_buf)?;
+        let processed_files = u64::from_le_bytes(u64_buf) as usize;
+        reader.read_exact(&mut u64_buf)?;
+        let skipped_files = u64::from_le_bytes(u64_buf) as usize;
+        reader.read_exact(&mut u64_buf)?;
+        let elapsed_ms = u64::from_le_bytes(u64_buf);
+        let elapsed = Duration::from_millis(elapsed_ms);
+
+        // Categories
+        reader.read_exact(&mut len_buf)?;
+        let cat_len = u32::from_le_bytes(len_buf) as usize;
+        let mut categories = BTreeMap::new();
+        for _ in 0..cat_len {
+            reader.read_exact(&mut len_buf)?;
+            let name_len = u32::from_le_bytes(len_buf) as usize;
+            let mut name_bytes = vec![0u8; name_len];
+            reader.read_exact(&mut name_bytes)?;
+            let name = String::from_utf8_lossy(&name_bytes).into_owned();
+
+            reader.read_exact(&mut u64_buf)?;
+            let bytes = u64::from_le_bytes(u64_buf);
+            reader.read_exact(&mut u64_buf)?;
+            let files_count = u64::from_le_bytes(u64_buf);
+
+            categories.insert(name, CategorySummary { bytes, files: files_count });
+        }
+
+        // Files
+        let mut u64_len_buf = [0u8; 8];
+        reader.read_exact(&mut u64_len_buf)?;
+        let files_len = u64::from_le_bytes(u64_len_buf) as usize;
+        let mut files = Vec::with_capacity(files_len);
+        for _ in 0..files_len {
+            reader.read_exact(&mut len_buf)?;
+            let path_len = u32::from_le_bytes(len_buf) as usize;
+            let mut path_bytes = vec![0u8; path_len];
+            reader.read_exact(&mut path_bytes)?;
+            let path = PathBuf::from(String::from_utf8_lossy(&path_bytes).into_owned());
+
+            reader.read_exact(&mut u64_buf)?;
+            let size = u64::from_le_bytes(u64_buf);
+
+            reader.read_exact(&mut len_buf)?;
+            let cat_len = u32::from_le_bytes(len_buf) as usize;
+            let mut cat_bytes = vec![0u8; cat_len];
+            reader.read_exact(&mut cat_bytes)?;
+            let category = String::from_utf8_lossy(&cat_bytes).into_owned();
+
+            files.push(FileEntry { path, size, category });
+        }
+
+        Ok(AnalysisReport {
+            root,
+            disk_usage,
+            files,
+            categories,
+            discovered_files,
+            processed_files,
+            skipped_files,
+            elapsed,
+        })
+    }
+}
+
+/// Get the directory next to the executable for storing binary reports.
+pub fn default_reports_dir() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            return parent.join("DiskReports");
+        }
+    }
+    PathBuf::from("DiskReports")
 }
 
 /// Options controlling a scan.

@@ -197,17 +197,27 @@ fn run_gui() -> io::Result<()> {
             let mut options = AnalyzeOptions::new(root);
             options.workers = 0;
             let result = Analyzer::new().analyze_with_progress(&options, progress);
-            if let Ok(report) = &result
-                && let Err(error) = write_report(report, &report_dir)
-            {
-                let ui = weak.clone();
-                let message = format!("Анализ готов, но отчёт не сохранён: {error}");
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(window) = ui.upgrade() {
-                        window.set_status_text(message.into());
-                    }
-                });
-                return;
+            if let Ok(report) = &result {
+                let bin_reports_dir = disk_analyzer::default_reports_dir();
+                let _ = std::fs::create_dir_all(&bin_reports_dir);
+                let label = report.root.file_name().and_then(|n| n.to_str()).unwrap_or("scan");
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let dar_path = bin_reports_dir.join(format!("{label}_{timestamp}.dar"));
+                let _ = report.save_binary(&dar_path);
+
+                if let Err(error) = write_report(report, &report_dir) {
+                    let ui = weak.clone();
+                    let message = format!("Анализ готов, но текстовый отчёт не сохранён: {error}");
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(window) = ui.upgrade() {
+                            window.set_status_text(message.into());
+                        }
+                    });
+                    return;
+                }
             }
             let ui = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
@@ -227,14 +237,22 @@ fn run_gui() -> io::Result<()> {
     let report_root = ui.clone();
     app.on_open_report(move || {
         if let Some(window) = report_root.upgrade() {
-            let root = PathBuf::from(window.get_root_path().to_string());
-            let folder = default_report_dir(&root);
-            if folder.exists() {
-                if let Err(error) = open_path(&folder) {
-                    window.set_status_text(format!("Не удалось открыть отчёт: {error}").into());
+            let reports_dir = disk_analyzer::default_reports_dir();
+            let _ = std::fs::create_dir_all(&reports_dir);
+            if let Some(path) = rfd::FileDialog::new()
+                .set_directory(&reports_dir)
+                .add_filter("Бинарные отчёты диска", &["dar"])
+                .pick_file()
+            {
+                match AnalysisReport::load_binary(&path) {
+                    Ok(report) => {
+                        display_report(&window, &report, &path);
+                        window.set_status_text(SharedString::from(format!("Открыт отчёт: {}", path.display())));
+                    }
+                    Err(error) => {
+                        window.set_status_text(SharedString::from(format!("Не удалось открыть бинарный отчёт: {error}")));
+                    }
                 }
-            } else {
-                window.set_status_text("Сначала выполните анализ: отчёт ещё не создан".into());
             }
         }
     });
