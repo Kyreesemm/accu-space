@@ -923,6 +923,187 @@ fn disk_usage(_path: &Path) -> io::Result<DiskUsage> {
     ))
 }
 
+/// An item of discovered system trash, cache, or development junk.
+#[derive(Debug, Clone)]
+pub struct TrashItem {
+    pub key: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub size: u64,
+    pub file_count: u64,
+    pub category: String,
+    pub description: String,
+}
+
+/// Calculate directory size and file count recursively.
+pub fn calculate_dir_size(path: &Path) -> (u64, u64) {
+    let mut total_bytes = 0;
+    let mut file_count = 0;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue; };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue; };
+            let p = entry.path();
+            if ft.is_dir() {
+                stack.push(p);
+            } else if ft.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    total_bytes += meta.len();
+                    file_count += 1;
+                }
+            }
+        }
+    }
+    (total_bytes, file_count)
+}
+
+/// Delete path contents (file or directory recursively) and return (bytes_freed, files_deleted).
+pub fn delete_path_contents(path: &Path) -> io::Result<(u64, u64)> {
+    let mut bytes_freed = 0;
+    let mut files_deleted = 0;
+    if path.is_file() {
+        if let Ok(meta) = fs::metadata(path) {
+            bytes_freed = meta.len();
+            files_deleted = 1;
+        }
+        fs::remove_file(path)?;
+        return Ok((bytes_freed, files_deleted));
+    }
+    if path.is_dir() {
+        let (b, c) = calculate_dir_size(path);
+        bytes_freed = b;
+        files_deleted = c;
+        fs::remove_dir_all(path)?;
+    }
+    Ok((bytes_freed, files_deleted))
+}
+
+/// Scan system trash, temporary folders, browser caches, and development artifacts.
+pub fn scan_trash() -> io::Result<Vec<TrashItem>> {
+    let mut items = Vec::new();
+
+    #[cfg(target_os = "linux")]
+    {
+        push_trash_item(&mut items, "linux_tmp", "Временные файлы (/tmp)", PathBuf::from("/tmp"), "Системный мусор", "Файлы во временной директории системы");
+        push_trash_item(&mut items, "linux_var_tmp", "Временные файлы (/var/tmp)", PathBuf::from("/var/tmp"), "Системный мусор", "Долгоживущие временные файлы");
+
+        if let Ok(home) = std::env::var("HOME").map(PathBuf::from) {
+            push_trash_item(&mut items, "user_cache", "Пользовательский кэш (~/.cache)", home.join(".cache"), "Кэш", "Общий кэш приложений");
+            push_trash_item(&mut items, "user_trash", "Корзина (~/.local/share/Trash)", home.join(".local/share/Trash"), "Корзина", "Удаленные файлы, ожидающие очистки");
+            push_trash_item(&mut items, "thumbnails", "Кэш миниатюр (~/.cache/thumbnails)", home.join(".cache/thumbnails"), "Кэш", "Предпросмотр изображений и видео");
+            push_trash_item(&mut items, "yay_cache", "Кэш AUR (yay)", home.join(".cache/yay"), "Пакеты", "Загруженные пакеты и исходники AUR");
+            push_trash_item(&mut items, "paru_cache", "Кэш AUR (paru)", home.join(".cache/paru"), "Пакеты", "Загруженные пакеты и исходники AUR");
+            push_trash_item(&mut items, "cargo_cache", "Кэш Cargo (~/.cargo/registry)", home.join(".cargo/registry/cache"), "Разработка", "Загруженные зависимости Rust");
+            push_trash_item(&mut items, "npm_cache", "Кэш npm (~/.npm)", home.join(".npm"), "Разработка", "Кэш пакетного менеджера Node.js");
+            push_trash_item(&mut items, "pip_cache", "Кэш pip (~/.cache/pip)", home.join(".cache/pip"), "Разработка", "Кэш пакетов Python");
+
+            let dev_roots = vec![
+                home.join("Projects"),
+                home.join("Dev"),
+                home.join("Workspace"),
+                home.join("Documents"),
+                home.join("Downloads"),
+            ];
+            for dev_root in dev_roots {
+                if dev_root.is_dir() {
+                    scan_dev_junk(&dev_root, &mut items);
+                }
+            }
+        }
+
+        let pacman_cache = PathBuf::from("/var/cache/pacman/pkg");
+        if pacman_cache.is_dir() {
+            push_trash_item(&mut items, "pacman_cache", "Кэш Pacman (/var/cache/pacman/pkg)", pacman_cache, "Пакеты", "Установленные и старые версии пакетов Arch Linux");
+        }
+        let apt_cache = PathBuf::from("/var/cache/apt/archives");
+        if apt_cache.is_dir() {
+            push_trash_item(&mut items, "apt_cache", "Кэш APT (/var/cache/apt/archives)", apt_cache, "Пакеты", "Загруженные пакеты Debian/Ubuntu");
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(windir) = std::env::var("SystemRoot").map(PathBuf::from) {
+            push_trash_item(&mut items, "win_temp", "Временные файлы Windows", windir.join("Temp"), "Системный мусор", "Системный кэш и временные файлы");
+            push_trash_item(&mut items, "win_update", "Кэш обновлений Windows", windir.join("SoftwareDistribution\\Download"), "Системный мусор", "Загруженные обновления Windows");
+        }
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA").map(PathBuf::from) {
+            push_trash_item(&mut items, "user_temp", "Временные файлы пользователя", local_appdata.join("Temp"), "Системный мусор", "Временные файлы приложений пользователя");
+            push_trash_item(&mut items, "win_explorer_cache", "Кэш иконок и миниатюр", local_appdata.join("Microsoft\\Windows\\Explorer"), "Кэш", "Базы данных миниатюр проводника");
+            push_trash_item(&mut items, "nuget_cache", "Кэш NuGet", local_appdata.join("NuGet\\Cache"), "Разработка", "Кэш пакетов .NET");
+        }
+        if let Ok(profile) = std::env::var("USERPROFILE").map(PathBuf::from) {
+            let dev_roots = vec![
+                profile.join("Source"),
+                profile.join("Projects"),
+                profile.join("Dev"),
+                profile.join("Documents"),
+            ];
+            for dev_root in dev_roots {
+                if dev_root.is_dir() {
+                    scan_dev_junk(&dev_root, &mut items);
+                }
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+fn push_trash_item(items: &mut Vec<TrashItem>, key: &str, name: &str, path: PathBuf, category: &str, desc: &str) {
+    if path.exists() {
+        let (size, file_count) = calculate_dir_size(&path);
+        if size > 0 || path.is_dir() {
+            items.push(TrashItem {
+                key: key.to_string(),
+                name: name.to_string(),
+                path,
+                size,
+                file_count,
+                category: category.to_string(),
+                description: desc.to_string(),
+            });
+        }
+    }
+}
+
+fn scan_dev_junk(root: &Path, items: &mut Vec<TrashItem>) {
+    let mut directories = vec![root.to_path_buf()];
+    let mut count = 0;
+    while let Some(dir) = directories.pop() {
+        count += 1;
+        if count > 5000 { break; }
+        let Ok(entries) = fs::read_dir(&dir) else { continue; };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue; };
+            if ft.is_dir() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if matches!(name_str.as_ref(), "node_modules" | "target" | "__pycache__" | ".pytest_cache" | ".mypy_cache" | "venv" | ".venv" | "env" | "dist" | "build" | ".next" | ".nuxt") {
+                    let path = entry.path();
+                    let (size, file_count) = calculate_dir_size(&path);
+                    if size > 0 {
+                        let key = format!("dev_{}", path.to_string_lossy());
+                        let parent_name = entry.path().parent().and_then(|p| p.file_name()).map_or("".to_string(), |n| n.to_string_lossy().into_owned());
+                        items.push(TrashItem {
+                            key,
+                            name: format!("{} ({})", name_str, parent_name),
+                            path,
+                            size,
+                            file_count,
+                            category: "Разработка (артефакты)".to_string(),
+                            description: format!("Директория {} в проекте", name_str),
+                        });
+                    }
+                } else if !matches!(name_str.as_ref(), ".git" | ".idea" | ".vscode") {
+                    directories.push(entry.path());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

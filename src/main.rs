@@ -257,6 +257,206 @@ fn run_gui() -> io::Result<()> {
         }
     });
 
+    let trash_items_storage = Arc::new(std::sync::Mutex::new(Vec::<disk_analyzer::TrashItem>::new()));
+    let selected_trash_keys = Arc::new(std::sync::Mutex::new(BTreeSet::<String>::new()));
+
+    let items_for_scan = trash_items_storage.clone();
+    let items_for_toggle = trash_items_storage.clone();
+    let items_for_clean = trash_items_storage.clone();
+    let items_for_clean_sel = trash_items_storage.clone();
+    let items_for_clean_all = trash_items_storage.clone();
+
+    let sel_for_scan = selected_trash_keys.clone();
+    let sel_for_toggle = selected_trash_keys.clone();
+    let sel_for_clean = selected_trash_keys.clone();
+    let sel_for_clean_sel = selected_trash_keys.clone();
+
+    let scan_ui_ref = ui.clone();
+    app.on_scan_trash(move || {
+        let Some(window) = scan_ui_ref.upgrade() else { return; };
+        window.set_trash_status("Сканирование мусора и кэша...".into());
+        let weak = scan_ui_ref.clone();
+        let store = items_for_scan.clone();
+        let sel_keys = sel_for_scan.clone();
+        std::thread::spawn(move || {
+            let result = disk_analyzer::scan_trash();
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(window) = weak.upgrade() else { return; };
+                match result {
+                    Ok(items) => {
+                        let total_bytes: u64 = items.iter().map(|i| i.size).sum();
+                        let total_files: u64 = items.iter().map(|i| i.file_count).sum();
+                        let mut keys = sel_keys.lock().unwrap();
+                        keys.clear();
+                        for i in &items {
+                            keys.insert(i.key.clone());
+                        }
+                        let rows = items.iter().map(|i| TrashRow {
+                            key: i.key.clone().into(),
+                            name: i.name.clone().into(),
+                            path: i.path.to_string_lossy().into_owned().into(),
+                            size: disk_analyzer::format_size(i.size).into(),
+                            count: i.file_count.to_string().into(),
+                            category: i.category.clone().into(),
+                            description: i.description.clone().into(),
+                            selected: true,
+                            ratio: if total_bytes == 0 { 0.0 } else { i.size as f32 / total_bytes as f32 },
+                        }).collect::<Vec<_>>();
+                        *store.lock().unwrap() = items;
+                        window.set_trash_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
+                        window.set_trash_total_text(format!("{} ({} файлов)", disk_analyzer::format_size(total_bytes), total_files).into());
+                        window.set_trash_status(format!("Найдено элементов: {}", store.lock().unwrap().len()).into());
+                    }
+                    Err(e) => {
+                        window.set_trash_status(format!("Ошибка сканирования мусора: {e}").into());
+                    }
+                }
+            });
+        });
+    });
+
+    let toggle_ui = ui.clone();
+    app.on_toggle_trash_row(move |key| {
+        let mut keys = sel_for_toggle.lock().unwrap();
+        let key_str = key.to_string();
+        if !keys.remove(&key_str) {
+            keys.insert(key_str);
+        }
+        let items = items_for_toggle.lock().unwrap();
+        let total_bytes: u64 = items.iter().map(|i| i.size).sum();
+        let rows = items.iter().map(|i| TrashRow {
+            key: i.key.clone().into(),
+            name: i.name.clone().into(),
+            path: i.path.to_string_lossy().into_owned().into(),
+            size: disk_analyzer::format_size(i.size).into(),
+            count: i.file_count.to_string().into(),
+            category: i.category.clone().into(),
+            description: i.description.clone().into(),
+            selected: keys.contains(&i.key),
+            ratio: if total_bytes == 0 { 0.0 } else { i.size as f32 / total_bytes as f32 },
+        }).collect::<Vec<_>>();
+        if let Some(window) = toggle_ui.upgrade() {
+            window.set_trash_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
+        }
+    });
+
+    let clean_ui = ui.clone();
+    app.on_clean_trash(move |key| {
+        let key_str = key.to_string();
+        let item_to_clean = {
+            let items = items_for_clean.lock().unwrap();
+            items.iter().find(|i| i.key == key_str).cloned()
+        };
+        if let Some(item) = item_to_clean {
+            match disk_analyzer::delete_path_contents(&item.path) {
+                Ok((freed, deleted)) => {
+                    let mut items = items_for_clean.lock().unwrap();
+                    items.retain(|i| i.key != key_str);
+                    sel_for_clean.lock().unwrap().remove(&key_str);
+                    let total_bytes: u64 = items.iter().map(|i| i.size).sum();
+                    let total_files: u64 = items.iter().map(|i| i.file_count).sum();
+                    let keys = sel_for_clean.lock().unwrap();
+                    let rows = items.iter().map(|i| TrashRow {
+                        key: i.key.clone().into(),
+                        name: i.name.clone().into(),
+                        path: i.path.to_string_lossy().into_owned().into(),
+                        size: disk_analyzer::format_size(i.size).into(),
+                        count: i.file_count.to_string().into(),
+                        category: i.category.clone().into(),
+                        description: i.description.clone().into(),
+                        selected: keys.contains(&i.key),
+                        ratio: if total_bytes == 0 { 0.0 } else { i.size as f32 / total_bytes as f32 },
+                    }).collect::<Vec<_>>();
+                    if let Some(window) = clean_ui.upgrade() {
+                        window.set_trash_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
+                        window.set_trash_total_text(format!("{} ({} файлов)", disk_analyzer::format_size(total_bytes), total_files).into());
+                        window.set_trash_status(format!("Очищено: {}, удалено файлов: {} (освобождено {})", item.name, deleted, disk_analyzer::format_size(freed)).into());
+                    }
+                }
+                Err(e) => {
+                    if let Some(window) = clean_ui.upgrade() {
+                        window.set_trash_status(format!("Не удалось очистить {}: {e}", item.name).into());
+                    }
+                }
+            }
+        }
+    });
+
+    let clean_sel_ui = ui.clone();
+    app.on_clean_selected_trash(move || {
+        let keys_to_clean = sel_for_clean_sel.lock().unwrap().clone();
+        if keys_to_clean.is_empty() {
+            if let Some(window) = clean_sel_ui.upgrade() {
+                window.set_trash_status("Не выбрано ни одного элемента для очистки".into());
+            }
+            return;
+        }
+        let mut total_freed = 0u64;
+        let mut total_deleted = 0u64;
+        let mut items = items_for_clean_sel.lock().unwrap();
+        items.retain(|i| {
+            if keys_to_clean.contains(&i.key) {
+                if let Ok((freed, deleted)) = disk_analyzer::delete_path_contents(&i.path) {
+                    total_freed += freed;
+                    total_deleted += deleted;
+                }
+                false
+            } else {
+                true
+            }
+        });
+        sel_for_clean_sel.lock().unwrap().clear();
+        for i in &*items {
+            sel_for_clean_sel.lock().unwrap().insert(i.key.clone());
+        }
+        let total_bytes: u64 = items.iter().map(|i| i.size).sum();
+        let total_files: u64 = items.iter().map(|i| i.file_count).sum();
+        let keys = sel_for_clean_sel.lock().unwrap();
+        let rows = items.iter().map(|i| TrashRow {
+            key: i.key.clone().into(),
+            name: i.name.clone().into(),
+            path: i.path.to_string_lossy().into_owned().into(),
+            size: disk_analyzer::format_size(i.size).into(),
+            count: i.file_count.to_string().into(),
+            category: i.category.clone().into(),
+            description: i.description.clone().into(),
+            selected: keys.contains(&i.key),
+            ratio: if total_bytes == 0 { 0.0 } else { i.size as f32 / total_bytes as f32 },
+        }).collect::<Vec<_>>();
+        if let Some(window) = clean_sel_ui.upgrade() {
+            window.set_trash_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
+            window.set_trash_total_text(format!("{} ({} файлов)", disk_analyzer::format_size(total_bytes), total_files).into());
+            window.set_trash_status(format!("Очищено выбранное: удалено файлов: {} (освобождено {})", total_deleted, disk_analyzer::format_size(total_freed)).into());
+        }
+    });
+
+    let clean_all_ui = ui.clone();
+    app.on_clean_all_trash(move || {
+        let items_snapshot = items_for_clean_all.lock().unwrap().clone();
+        if items_snapshot.is_empty() {
+            if let Some(window) = clean_all_ui.upgrade() {
+                window.set_trash_status("Список мусора пуст".into());
+            }
+            return;
+        }
+        let mut total_freed = 0u64;
+        let mut total_deleted = 0u64;
+        for i in &items_snapshot {
+            if let Ok((freed, deleted)) = disk_analyzer::delete_path_contents(&i.path) {
+                total_freed += freed;
+                total_deleted += deleted;
+            }
+        }
+        let mut items = items_for_clean_all.lock().unwrap();
+        items.clear();
+        selected_trash_keys.lock().unwrap().clear();
+        if let Some(window) = clean_all_ui.upgrade() {
+            window.set_trash_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(Vec::<TrashRow>::new()))));
+            window.set_trash_total_text("0 байт".into());
+            window.set_trash_status(format!("Очищено всё: удалено файлов: {} (освобождено {})", total_deleted, disk_analyzer::format_size(total_freed)).into());
+        }
+    });
+
     app.run()
         .map_err(|error| io::Error::other(error.to_string()))
 }
@@ -598,6 +798,7 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn open_path(path: &std::path::Path) -> io::Result<()> {
     #[cfg(target_os = "windows")]
     let result = std::process::Command::new("explorer").arg(path).spawn();

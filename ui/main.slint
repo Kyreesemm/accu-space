@@ -4,6 +4,7 @@ export struct CategoryRow { name: string, size: string, files: string, percent: 
 export struct Tile { x: float, y: float, width: float, height: float, label: string, size: string, color: color }
 export struct DiskRow { name: string, path: string, total: string, used: string, free: string, used-ratio: float, kind: string }
 export struct TreeRow { name: string, kind: string, size: string, files: string, indent: length, color: color, is-file: bool, expandable: bool, expanded: bool, key: string }
+export struct TrashRow { key: string, name: string, path: string, size: string, count: string, category: string, description: string, selected: bool, ratio: float }
 
 component ActionButton inherits Rectangle {
     in property <string> label;
@@ -70,11 +71,19 @@ export component MainWindow inherits Window {
     in-out property <[Tile]> tiles: [];
     in-out property <string> scanned-root: "";
     in-out property <[DiskRow]> disks: [];
+    in-out property <[TrashRow]> trash-rows: [];
+    in-out property <string> trash-status: "Мусор не просканирован";
+    in-out property <string> trash-total-text: "0 байт";
     callback choose-folder();
     callback start-analysis();
     callback open-report();
     callback refresh-disks();
     callback toggle-tree-row(name: string);
+    callback scan-trash();
+    callback clean-trash(string);
+    callback clean-selected-trash();
+    callback clean-all-trash();
+    callback toggle-trash-row(string);
 
     changed map-height-control => { root.map-height = root.map-height-control * 1px; }
 
@@ -102,6 +111,7 @@ export component MainWindow inherits Window {
                 NavItem { label: "Диски"; icon: @image-url("icons/disk.svg"); selected: root.active-page == 0; activate => { root.active-page = 0; } }
                 NavItem { label: "Обзор"; icon: @image-url("icons/chart.svg"); selected: root.active-page == 1; activate => { root.active-page = 1; } }
                 NavItem { label: "Карта и дерево"; icon: @image-url("icons/tree.svg"); selected: root.active-page == 2; activate => { root.active-page = 2; } }
+                NavItem { label: "Очистка мусора"; icon: @image-url("icons/trash.svg"); selected: root.active-page == 3; activate => { root.active-page = 3; } }
                 Rectangle { vertical-stretch: 1; background: transparent; }
                 Rectangle { height: 1px; background: #303237; }
                 Text { text: "СОСТОЯНИЕ"; color: #92969d; font-size: 9px; }
@@ -303,6 +313,100 @@ export component MainWindow inherits Window {
                                 Text { text: row.size; x: parent.width - 200px; width: 110px; color: #e1e3e6; vertical-alignment: center; }
                                 Text { text: row.files; x: parent.width - 90px; width: 80px; color: #b2b6bc; vertical-alignment: center; }
                                 TouchArea { clicked => { if row.expandable { root.toggle-tree-row(row.key); } } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.active-page == 3: VerticalLayout {
+            spacing: 14px;
+            HorizontalLayout {
+                VerticalLayout { spacing: 3px;
+                    Text { text: "Очистка мусора и кэша"; color: #eceef0; font-size: 26px; font-weight: 700; }
+                    Text { text: "Поиск и удаление временных файлов, кэша и артефактов разработки"; color: #a7abb1; font-size: 13px; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    ActionButton { label: "Сканировать"; clicked => { root.scan-trash(); } }
+                    ActionButton { label: "Очистить выбранное"; clicked => { root.clean-selected-trash(); } }
+                    ActionButton { label: "Очистить всё"; primary: true; clicked => { root.clean-all-trash(); } }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Rectangle { background: #202225; border-radius: 12px; border-width: 1px; border-color: #34373c;
+                    VerticalLayout { padding: 13px; spacing: 7px;
+                        Text { text: "ОБНАРУЖЕНО МУСОРА"; color: #a7abb1; font-size: 10px; font-weight: 700; }
+                        Text { text: root.trash-total-text; color: #e5e7e9; font-size: 14px; font-weight: 600; }
+                    }
+                }
+                Rectangle { background: #202225; border-radius: 12px; border-width: 1px; border-color: #34373c;
+                    VerticalLayout { padding: 13px; spacing: 7px;
+                        Text { text: "СТАТУС"; color: #a7abb1; font-size: 10px; font-weight: 700; }
+                        Text { text: root.trash-status; color: #e5e7e9; font-size: 14px; wrap: word-wrap; }
+                    }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1; background: #202225; border-radius: 14px; border-width: 1px; border-color: #34373c;
+                VerticalLayout { padding: 16px; spacing: 10px;
+                    HorizontalLayout {
+                        Text { text: "Элементы мусора и кэша"; color: #eceef0; font-size: 17px; font-weight: 700; }
+                        Text { text: "Выберите элементы для очистки"; color: #a7abb1; horizontal-alignment: right; }
+                    }
+                    Rectangle {
+                        height: 28px; background: #292c30; border-radius: 6px;
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 8px;
+                            Text { text: "ВЫБОР"; width: 60px; color: #b1b5bb; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "КАТЕГОРИЯ И НАЗВАНИЕ"; horizontal-stretch: 1; color: #b1b5bb; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "РАЗМЕР"; width: 110px; color: #b1b5bb; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "ДЕЙСТВИЕ"; width: 100px; color: #b1b5bb; font-size: 10px; font-weight: 700; vertical-alignment: center; horizontal-alignment: center; }
+                        }
+                    }
+                    ScrollView {
+                        VerticalLayout {
+                            width: 100%; padding-right: 30px; padding-bottom: 6px; spacing: 6px;
+                            if root.trash-rows.length == 0: Text {
+                                text: "Нажмите «Сканировать», чтобы найти мусор и временные файлы.";
+                                color: #a7abb1; height: 100px; vertical-alignment: center; horizontal-alignment: center;
+                            }
+                            for row in root.trash-rows: Rectangle {
+                                height: 48px; background: #26292c; border-radius: 7px;
+                                HorizontalLayout {
+                                    padding-left: 10px; padding-right: 10px; spacing: 10px; alignment: center;
+                                    Rectangle {
+                                        width: 40px; height: 48px;
+                                        TouchArea {
+                                            clicked => { root.toggle-trash-row(row.key); }
+                                        }
+                                        Rectangle {
+                                            x: 10px; y: 16px; width: 16px; height: 16px; border-radius: 4px;
+                                            border-width: 2px; border-color: row.selected ? #526579 : #52575f;
+                                            background: row.selected ? #526579 : transparent;
+                                            Text { text: row.selected ? "✓" : ""; color: #fff; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        vertical-stretch: 1; alignment: center; spacing: 2px; width: parent.width - 290px;
+                                        Text { text: row.name; color: #e1e3e6; font-size: 13px; font-weight: 600; overflow: elide; }
+                                        Text { text: row.path; color: #979ba2; font-size: 10px; overflow: elide; }
+                                    }
+                                    VerticalLayout {
+                                        width: 110px; vertical-stretch: 1; alignment: center; spacing: 2px;
+                                        Text { text: row.size; color: #e1e3e6; font-size: 12px; font-weight: 600; }
+                                        Text { text: row.count + " файлов"; color: #979ba2; font-size: 10px; }
+                                    }
+                                    Rectangle {
+                                        width: 100px; height: 32px; y: 8px;
+                                        SmallButton {
+                                            label: "Очистить";
+                                            clicked => { root.clean-trash(row.key); }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
