@@ -18,68 +18,91 @@ const CATEGORY_DEFINITIONS: &[(&str, &[&str])] = &[
     (
         "Системные",
         &[
-            "sys", "dll", "drv", "ini", "cfg", "inf", "lnk", "dmp", "tmp", "bak", "log", "msi",
+            "sys", "dll", "drv", "ini", "cfg", "inf", "lnk", "dmp", "tmp", "bak",
+            "log", "msi", "cab", "cat", "rom", "efi", "old", "reg", "manifest",
         ],
     ),
     (
         "Программы",
-        &["exe", "app", "pkg", "msi", "bat", "cmd", "sh"],
+        &[
+            "exe", "app", "pkg", "msi", "bat", "cmd", "sh", "deb", "rpm", "msix",
+            "appx", "AppImage",
+        ],
     ),
     (
         "Игры",
         &[
-            "iso", "rom", "nes", "gba", "sg", "bin", "cue", "vdf", "gcf", "nsp", "xci",
+            "iso", "rom", "nes", "gba", "sg", "bin", "cue", "vdf", "gcf", "nsp",
+            "xci", "wbfs", "wad", "patch", "bik", "vpk", "pak",
         ],
     ),
     (
         "Видео",
         &[
             "mp4", "avi", "mkv", "mov", "flv", "wmv", "m4v", "3gp", "webm", "ts",
+            "m2ts", "ogv", "divx", "xvid", "rm", "rmvb", "asf", "f4v",
         ],
     ),
     (
         "Музыка",
-        &["mp3", "wav", "flac", "aac", "ogg", "wma", "m4a", "opus"],
+        &[
+            "mp3", "wav", "flac", "aac", "ogg", "wma", "m4a", "opus", "alac",
+            "m4b", "oga", "ape", "wv", "mid", "midi", "aiff", "ac3",
+        ],
     ),
     (
         "Фото",
         &[
-            "jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "raw", "cr2", "nef",
+            "jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "raw", "cr2",
+            "nef", "arw", "dng", "svg", "ico", "psd", "ai", "eps", "heic", "heif",
+            "xcf", "indd",
         ],
     ),
     (
         "Документы",
         &[
-            "doc", "docx", "pdf", "txt", "xls", "xlsx", "ppt", "pptx", "odt", "rtf", "md",
+            "doc", "docx", "pdf", "txt", "xls", "xlsx", "ppt", "pptx", "odt",
+            "rtf", "md", "epub", "mobi", "djvu", "fb2", "csv", "ods", "odp",
+            "pages", "key", "numbers", "chm", "tex", "ps",
         ],
     ),
     (
         "Архивы",
-        &["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lz", "dmg"],
+        &[
+            "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lz", "dmg", "zst",
+            "tgz", "tbz2", "cab", "iso", "arj", "cpio", "deb", "rpm",
+        ],
     ),
     (
         "Базы данных",
-        &["db", "sql", "csv", "sqlite", "mdb", "accdb", "json", "xml"],
+        &[
+            "db", "sql", "sqlite", "sqlite3", "mdb", "accdb", "json", "xml",
+            "bson", "ldb", "sst", "sqlite-shm", "sqlite-wal", "myd", "myi", "frm",
+        ],
     ),
-    (
-        "Скрипты",
-        &["py", "js", "ps1", "vbs", "php", "java", "c", "cpp", "h"],
-    ),
-    ("Веб-файлы", &["html", "htm", "css", "scss", "less", "sass"]),
-    (
-        "Образы дисков",
-        &["vhd", "vhdx", "img", "qcow2", "vdi", "vmdk"],
-    ),
-    ("Шрифты", &["ttf", "otf", "woff", "woff2", "eot", "fon"]),
-    ("Логи", &["log", "evtx", "trace"]),
     (
         "Разработка",
         &[
             "rs", "go", "ts", "js", "jsx", "tsx", "py", "c", "cpp", "h", "hpp",
             "cs", "java", "kt", "kts", "swift", "rb", "php", "lock", "toml",
-            "yaml", "yml", "cmake", "vue", "svelte",
+            "yaml", "yml", "cmake", "vue", "svelte", "ex", "exs", "scala",
+            "patch", "diff", "asm", "s", "cc", "cxx", "tsx",
         ],
     ),
+    (
+        "Скрипты",
+        &["ps1", "vbs", "lua", "pl", "pm", "r", "jl", "bash", "zsh", "fish"],
+    ),
+    (
+        "Веб-файлы",
+        &["html", "htm", "css", "scss", "less", "sass", "wasm", "map"],
+    ),
+    (
+        "Образы дисков",
+        &["vhd", "vhdx", "img", "qcow2", "vdi", "vmdk", "toast"],
+    ),
+    ("Шрифты", &["ttf", "otf", "woff", "woff2", "eot", "fon", "pfb", "pfm"]),
+    ("Логи", &["log", "evtx", "trace", "dump", "out", "err"]),
 ];
 
 /// Filesystem capacity information for the filesystem containing the scan root.
@@ -248,42 +271,115 @@ impl Analyzer {
         }
 
         let disk_usage = disk_usage(&root)?;
-        let (paths, skipped_during_walk) = collect_file_paths(&root, &options.ignore_dirs)?;
-        let discovered_files = paths.len();
-        let workers = worker_count(options.workers, discovered_files);
-        let queue = Arc::new(Mutex::new(VecDeque::from(paths)));
-        let files = Arc::new(Mutex::new(Vec::with_capacity(discovered_files)));
-        let skipped = Arc::new(AtomicUsize::new(skipped_during_walk));
-        let processed = Arc::new(AtomicUsize::new(0));
-        let progress: Arc<dyn Fn(Progress) + Send + Sync> = Arc::new(progress);
+        let ignored: Vec<String> = options.ignore_dirs.iter().map(|n| n.to_lowercase()).collect();
 
+        // Phase 1: Fast directory traversal and file collection with sizes
+        let mut directories = vec![root.clone()];
+        let mut file_items = Vec::new();
+        let mut skipped = 0usize;
+
+        while let Some(dir) = directories.pop() {
+            let entries = match fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            for item in entries {
+                let item = match item {
+                    Ok(i) => i,
+                    Err(_) => {
+                        skipped += 1;
+                        continue;
+                    }
+                };
+                let Ok(file_type) = item.file_type() else {
+                    skipped += 1;
+                    continue;
+                };
+                let name = item.file_name();
+                if file_type.is_dir() {
+                    if is_ignored_name(&name, &ignored) {
+                        continue;
+                    }
+                    directories.push(item.path());
+                } else if file_type.is_file() {
+                    let path = item.path();
+                    let size = item.metadata()
+                        .map(|m| m.len())
+                        .or_else(|_| fs::metadata(&path).map(|m| m.len()));
+                    match size {
+                        Ok(size) => file_items.push((path, size)),
+                        Err(_) => skipped += 1,
+                    }
+                }
+            }
+        }
+
+        let discovered_files = file_items.len();
+        let workers = worker_count(options.workers, discovered_files);
+        let queue = Arc::new(Mutex::new(VecDeque::from(file_items)));
+        let files = Arc::new(Mutex::new(Vec::with_capacity(discovered_files)));
+        let processed = Arc::new(AtomicUsize::new(0));
+        let progress = Arc::new(progress);
+        let skipped_atomic = Arc::new(AtomicUsize::new(skipped));
+
+        // Initial progress report with total discovered files
+        progress(Progress {
+            discovered_files,
+            processed_files: 0,
+            skipped_files: skipped,
+        });
+
+        // Phase 2: Parallel categorization and aggregation
         thread::scope(|scope| {
             for _ in 0..workers {
                 let queue = Arc::clone(&queue);
                 let files = Arc::clone(&files);
-                let skipped = Arc::clone(&skipped);
                 let processed = Arc::clone(&processed);
+                let skipped_atomic = Arc::clone(&skipped_atomic);
                 let progress = Arc::clone(&progress);
+
                 scope.spawn(move || {
+                    let mut local_entries = Vec::with_capacity(256);
+                    let mut local_processed = 0usize;
+
                     loop {
-                        let path = queue.lock().expect("path queue mutex poisoned").pop_front();
-                        let Some(path) = path else { break };
-                        match inspect_file(path) {
-                            Ok(entry) => {
-                                files.lock().expect("result mutex poisoned").push(entry);
-                            }
-                            Err(_) => {
-                                skipped.fetch_add(1, Ordering::Relaxed);
+                        let item = {
+                            let mut q = queue.lock().unwrap();
+                            q.pop_front()
+                        };
+                        let Some((path, size)) = item else { break };
+
+                        let category = category_for_path(&path);
+                        local_entries.push(FileEntry { path, size, category });
+                        local_processed += 1;
+
+                        if local_entries.len() >= 128 {
+                            let mut f = files.lock().unwrap();
+                            f.append(&mut local_entries);
+                            let done = processed.fetch_add(local_processed, Ordering::Relaxed) + local_processed;
+                            local_processed = 0;
+                            if done.is_multiple_of(100) || done == discovered_files {
+                                progress(Progress {
+                                    discovered_files,
+                                    processed_files: done,
+                                    skipped_files: skipped_atomic.load(Ordering::Relaxed),
+                                });
                             }
                         }
-                        let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                        if done.is_multiple_of(100) || done == discovered_files {
-                            progress(Progress {
-                                discovered_files,
-                                processed_files: done,
-                                skipped_files: skipped.load(Ordering::Relaxed),
-                            });
-                        }
+                    }
+
+                    if !local_entries.is_empty() || local_processed > 0 {
+                        let mut f = files.lock().unwrap();
+                        f.append(&mut local_entries);
+                        let done = processed.fetch_add(local_processed, Ordering::Relaxed) + local_processed;
+                        progress(Progress {
+                            discovered_files,
+                            processed_files: done,
+                            skipped_files: skipped_atomic.load(Ordering::Relaxed),
+                        });
                     }
                 });
             }
@@ -293,7 +389,9 @@ impl Analyzer {
             .map_err(|_| io::Error::other("ошибка завершения рабочих потоков"))?
             .into_inner()
             .map_err(|_| io::Error::other("ошибка чтения результатов анализа"))?;
+
         files.sort_by(|left, right| left.path.cmp(&right.path));
+
         let mut categories = BTreeMap::new();
         for entry in &files {
             let summary = categories
@@ -303,14 +401,17 @@ impl Analyzer {
             summary.files += 1;
         }
 
+        let processed_count = processed.load(Ordering::Relaxed);
+        let skipped_count = skipped_atomic.load(Ordering::Relaxed);
+
         let report = AnalysisReport {
             root,
             disk_usage,
             files,
             categories,
             discovered_files,
-            processed_files: processed.load(Ordering::Relaxed),
-            skipped_files: skipped.load(Ordering::Relaxed),
+            processed_files: processed_count,
+            skipped_files: skipped_count,
             elapsed: started.elapsed(),
         };
         progress(Progress {
@@ -334,61 +435,9 @@ fn worker_count(requested: usize, files: usize) -> usize {
         .min(files)
 }
 
-fn collect_file_paths(root: &Path, ignored: &[String]) -> io::Result<(Vec<PathBuf>, usize)> {
-    let ignored: Vec<String> = ignored.iter().map(|name| name.to_lowercase()).collect();
-    let mut directories = vec![root.to_path_buf()];
-    let mut paths = Vec::new();
-    let mut skipped = 0;
-    while let Some(directory) = directories.pop() {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(_) => {
-                skipped += 1;
-                continue;
-            }
-        };
-        for item in entries {
-            let item = match item {
-                Ok(item) => item,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let file_type = match item.file_type() {
-                Ok(file_type) => file_type,
-                Err(_) => {
-                    skipped += 1;
-                    continue;
-                }
-            };
-            let name = item.file_name();
-            if file_type.is_dir() {
-                if is_ignored_name(&name, &ignored) {
-                    continue;
-                }
-                directories.push(item.path());
-            } else if file_type.is_file() {
-                paths.push(item.path());
-            }
-        }
-    }
-    Ok((paths, skipped))
-}
-
 fn is_ignored_name(name: &OsString, ignored: &[String]) -> bool {
     let name = name.to_string_lossy().to_lowercase();
     ignored.iter().any(|candidate| candidate == &name)
-}
-
-fn inspect_file(path: PathBuf) -> io::Result<FileEntry> {
-    let size = fs::metadata(&path)?.len();
-    let category = category_for_path(&path);
-    Ok(FileEntry {
-        path,
-        size,
-        category,
-    })
 }
 
 /// Return the category used by the original analyzer for a path.
