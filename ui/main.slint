@@ -1,9 +1,9 @@
-import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+import { Button, LineEdit, ScrollView, Slider } from "std-widgets.slint";
 
-export struct CategoryRow { name: string, size: string, files: string, percent: string }
+export struct CategoryRow { name: string, size: string, files: string, percent: string, ratio: float, color: color }
 export struct Tile { x: float, y: float, width: float, height: float, label: string, size: string, color: color }
 export struct DiskRow { name: string, path: string, total: string, used: string, free: string, used-ratio: float, kind: string }
-export struct TreeRow { name: string, kind: string, size: string, files: string, indent: length, color: color, is-file: bool }
+export struct TreeRow { name: string, kind: string, size: string, files: string, indent: length, color: color, is-file: bool, expandable: bool, expanded: bool, key: string }
 
 component ActionButton inherits Rectangle {
     in property <string> label;
@@ -37,12 +37,14 @@ component SmallButton inherits Rectangle {
 
 component NavItem inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> selected;
     callback activate();
     height: 38px;
     background: selected ? #34383e : #1b1d20;
     border-radius: 8px;
-    Text { text: label; color: selected ? #f1f2f3 : #aeb2b8; font-size: 13px; vertical-alignment: center; x: 12px; }
+    Image { source: root.icon; x: 11px; y: 10px; width: 18px; height: 18px; image-fit: contain; }
+    Text { text: label; color: selected ? #f1f2f3 : #aeb2b8; font-size: 13px; vertical-alignment: center; x: 38px; }
     TouchArea { clicked => { root.activate(); } }
 }
 
@@ -61,6 +63,8 @@ export component MainWindow inherits Window {
     in-out property <string> progress-text: "Ожидание";
     in-out property <int> progress-value: 0;
     in-out property <int> active-page: 0;
+    in-out property <length> map-height: 270px;
+    in-out property <float> map-height-control: 270;
     in-out property <[CategoryRow]> category-rows: [];
     in-out property <[TreeRow]> tree-rows: [];
     in-out property <[Tile]> tiles: [];
@@ -70,6 +74,9 @@ export component MainWindow inherits Window {
     callback start-analysis();
     callback open-report();
     callback refresh-disks();
+    callback toggle-tree-row(name: string);
+
+    changed map-height-control => { root.map-height = root.map-height-control * 1px; }
 
     HorizontalLayout {
         padding: 7px;
@@ -92,9 +99,9 @@ export component MainWindow inherits Window {
                 }
                 Rectangle { height: 1px; background: #303237; }
                 Text { text: "РАБОЧЕЕ ПРОСТРАНСТВО"; color: #92969d; font-size: 9px; }
-                NavItem { label: "Диски"; selected: root.active-page == 0; activate => { root.active-page = 0; } }
-                NavItem { label: "Обзор"; selected: root.active-page == 1; activate => { root.active-page = 1; } }
-                NavItem { label: "Карта и дерево"; selected: root.active-page == 2; activate => { root.active-page = 2; } }
+                NavItem { label: "Диски"; icon: @image-url("icons/disk.svg"); selected: root.active-page == 0; activate => { root.active-page = 0; } }
+                NavItem { label: "Обзор"; icon: @image-url("icons/chart.svg"); selected: root.active-page == 1; activate => { root.active-page = 1; } }
+                NavItem { label: "Карта и дерево"; icon: @image-url("icons/tree.svg"); selected: root.active-page == 2; activate => { root.active-page = 2; } }
                 Rectangle { vertical-stretch: 1; background: transparent; }
                 Rectangle { height: 1px; background: #303237; }
                 Text { text: "СОСТОЯНИЕ"; color: #92969d; font-size: 9px; }
@@ -109,7 +116,7 @@ export component MainWindow inherits Window {
                 }
                 Text { text: root.progress-text; color: #aeb2b8; font-size: 10px; wrap: word-wrap; }
                 Rectangle { height: 1px; background: #303237; }
-                Text { text: "DISK ANALYZER  ·  0.1.0"; color: #858990; font-size: 9px; }
+                Text { text: "DISK ANALYZER  ·  0.2.0"; color: #858990; font-size: 9px; }
             }
         }
 
@@ -127,40 +134,26 @@ export component MainWindow inherits Window {
                 VerticalLayout { padding: 16px; spacing: 8px;
                     ScrollView {
                         VerticalLayout {
-                            width: 100%; spacing: 10px; padding-right: 20px; padding-bottom: 6px;
+                            width: 100%; spacing: 10px; padding-right: 26px; padding-bottom: 6px;
                             if root.disks.length == 0: Text { text: "Поиск доступных дисков…"; color: #a7abb1; height: 80px; vertical-alignment: center; horizontal-alignment: center; }
                             GridLayout {
                                 width: 100%; spacing: 10px;
                                 for disk[index] in root.disks: Rectangle {
-                                row: index / 2; col: Math.mod(index, 2);
-                                height: 148px; background: #292c30; border-radius: 11px; border-width: 1px; border-color: #393d42;
-                                HorizontalLayout {
-                                    padding: 12px; spacing: 10px;
-                                    Rectangle {
-                                        width: 44px; height: 44px; background: #34383e; border-radius: 10px;
-                                        Image { source: @image-url("icons/disk.svg"); width: 22px; height: 22px; image-fit: contain; }
-                                    }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1; spacing: 6px;
-                                        HorizontalLayout {
-                                            VerticalLayout { horizontal-stretch: 1; spacing: 2px;
-                                                Text { text: disk.name; color: #eceef0; font-size: 15px; font-weight: 650; }
-                                                Text { text: disk.path; color: #a7abb1; font-size: 11px; }
-                                            }
-                                            Text { text: disk.kind; color: #b2b6bc; font-size: 11px; vertical-alignment: center; }
-                                        }
-                                        Rectangle {
-                                            height: 7px; background: #41454a; border-radius: 4px; clip: true;
-                                            Rectangle { x: 0px; width: disk.used-ratio * parent.width; height: parent.height; background: #91a0ae; border-radius: 4px; }
-                                        }
-                                        HorizontalLayout {
-                                            Text { text: disk.total; color: #e1e3e6; font-size: 11px; }
-                                            Text { text: disk.used; color: #a7abb1; font-size: 11px; horizontal-alignment: center; }
-                                            Text { text: disk.free; color: #a7abb1; font-size: 11px; horizontal-alignment: right; }
-                                        }
-                                    }
-                                    SmallButton { label: "Анализировать"; clicked => { root.root-path = disk.path; root.active-page = 1; root.start-analysis(); } }
+                                row: index / 2; col: Math.mod(index, 2); width: (parent.width - 10px) / 2;
+                                height: 136px; background: #292c30; border-radius: 11px; border-width: 1px; border-color: #393d42;
+                                Image { source: @image-url("icons/disk.svg"); x: 14px; y: 13px; width: 30px; height: 30px; image-fit: contain; }
+                                Text { text: disk.name; x: 54px; y: 12px; width: parent.width - 120px; color: #eceef0; font-size: 15px; font-weight: 650; }
+                                Text { text: disk.path; x: 54px; y: 34px; width: parent.width - 120px; color: #a7abb1; font-size: 11px; }
+                                Text { text: disk.kind; x: parent.width - 76px; y: 14px; width: 62px; color: #b2b6bc; font-size: 11px; horizontal-alignment: right; }
+                                Rectangle {
+                                    x: 14px; y: 55px; width: parent.width - 28px; height: 7px;
+                                    background: #41454a; border-radius: 4px; clip: true;
+                                    Rectangle { x: 0px; width: disk.used-ratio * parent.width; height: parent.height; background: #91a0ae; border-radius: 4px; }
                                 }
+                                Text { text: disk.total; x: 14px; y: 68px; width: (parent.width - 28px) / 3; color: #e1e3e6; font-size: 10px; }
+                                Text { text: disk.used; x: 14px + (parent.width - 28px) / 3; y: 68px; width: (parent.width - 28px) / 3; color: #a7abb1; font-size: 10px; horizontal-alignment: center; }
+                                Text { text: disk.free; x: 14px + 2 * (parent.width - 28px) / 3; y: 68px; width: (parent.width - 28px) / 3; color: #a7abb1; font-size: 10px; horizontal-alignment: right; }
+                                SmallButton { x: parent.width - 126px; y: 91px; label: "Анализировать"; clicked => { root.root-path = disk.path; root.active-page = 1; root.start-analysis(); } }
                             }
                             }
                         }
@@ -227,7 +220,7 @@ export component MainWindow inherits Window {
                     Rectangle { height: 1px; background: #36393e; }
                     ScrollView {
                         VerticalLayout {
-                            width: 100%; padding-right: 20px; padding-bottom: 6px;
+                            width: 100%; padding-right: 30px; padding-bottom: 6px;
                             if root.category-rows.length == 0: Text {
                                 text: "Выберите папку и запустите анализ, чтобы увидеть разбивку.";
                                 color: #a7abb1; height: 100px; vertical-alignment: center; horizontal-alignment: center;
@@ -255,11 +248,12 @@ export component MainWindow inherits Window {
                 ActionButton { label: "Открыть отчёт"; clicked => { root.open-report(); } }
             }
             Rectangle {
-                height: 270px; background: #202225; border-radius: 14px; border-width: 1px; border-color: #34373c;
+                height: root.map-height; vertical-stretch: 0; background: #202225; border-radius: 14px; border-width: 1px; border-color: #34373c;
                 VerticalLayout { padding: 14px; spacing: 8px;
                     HorizontalLayout {
                         Text { text: "Карта размеров"; color: #eceef0; font-size: 16px; font-weight: 700; }
                         Text { text: "Площадь плитки соответствует размеру файла · цвет по типу"; color: #a7abb1; horizontal-alignment: right; font-size: 11px; }
+                        Slider { minimum: 180; maximum: 520; value <=> root.map-height-control; width: 120px; }
                     }
                     Rectangle {
                         background: #17191b; border-radius: 9px; clip: true;
@@ -295,18 +289,20 @@ export component MainWindow inherits Window {
                     }
                     ScrollView {
                         VerticalLayout {
-                            width: 100%; padding-right: 20px; padding-bottom: 6px;
+                            width: 100%; padding-right: 30px; padding-bottom: 6px;
                             if root.tree-rows.length == 0: Text { text: "Дерево появится после завершения анализа."; color: #a7abb1; height: 70px; vertical-alignment: center; horizontal-alignment: center; }
                             for row in root.tree-rows: Rectangle {
                                 height: 32px;
                                 background: row.is-file ? #26292c : #2c3034;
                                 border-radius: 5px;
-                                Image { source: row.is-file ? @image-url("icons/file.svg") : @image-url("icons/folder.svg"); x: row.indent + 3px; y: 7px; width: 18px; height: 18px; image-fit: contain; }
-                                Rectangle { x: row.indent + 25px; y: 7px; width: 3px; height: 18px; background: row.color; border-radius: 2px; }
+                                Text { text: row.expandable ? (row.expanded ? "⌄" : "›") : ""; x: row.indent; width: 12px; color: #aeb7c0; vertical-alignment: center; horizontal-alignment: center; }
+                                Image { source: row.is-file ? @image-url("icons/file.svg") : @image-url("icons/folder.svg"); x: row.indent + 13px; y: 7px; width: 18px; height: 18px; image-fit: contain; }
                                 Text { text: row.name; x: row.indent + 36px; width: parent.width - row.indent - 326px; color: #e1e3e6; vertical-alignment: center; overflow: elide; }
+                                Rectangle { x: row.indent + 31px; y: 7px; width: 3px; height: 18px; background: row.color; border-radius: 2px; }
                                 Text { text: row.kind; x: parent.width - 290px; width: 90px; color: #a7abb1; vertical-alignment: center; }
                                 Text { text: row.size; x: parent.width - 200px; width: 110px; color: #e1e3e6; vertical-alignment: center; }
                                 Text { text: row.files; x: parent.width - 90px; width: 80px; color: #b2b6bc; vertical-alignment: center; }
+                                TouchArea { clicked => { if row.expandable { root.toggle-tree-row(row.key); } } }
                             }
                         }
                     }

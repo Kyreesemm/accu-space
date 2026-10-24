@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::env;
 use std::io;
 use std::path::PathBuf;
@@ -117,6 +118,20 @@ fn run() -> io::Result<()> {
 fn run_gui() -> io::Result<()> {
     let app = MainWindow::new().map_err(|error| io::Error::other(error.to_string()))?;
     let ui = app.as_weak();
+    let tree_expanded = Arc::new(std::sync::Mutex::new(BTreeSet::<String>::new()));
+    let toggle_ui = ui.clone();
+    let toggle_expanded = tree_expanded.clone();
+    app.on_toggle_tree_row(move |name| {
+        let mut expanded = toggle_expanded.lock().expect("tree expansion lock poisoned");
+        let key = name.to_string();
+        if !expanded.insert(key.clone()) { expanded.remove(&key); }
+        let rows = TREE_CACHE.with(|cache| cache.borrow().clone());
+        if let Some(window) = toggle_ui.upgrade() {
+            let mut visible = Vec::new();
+            if let Some(tree) = rows { flatten_tree(&tree, 0, String::new(), &mut visible, &expanded); }
+            window.set_tree_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(visible))));
+        }
+    });
     let refresh_ui = ui.clone();
     app.on_refresh_disks(move || refresh_disk_rows(&refresh_ui));
     refresh_disk_rows(&ui);
@@ -248,6 +263,8 @@ fn refresh_disk_rows(ui: &slint::Weak<MainWindow>) {
     }
 }
 
+thread_local! { static TREE_CACHE: std::cell::RefCell<Option<TreeNode>> = const { std::cell::RefCell::new(None) }; }
+
 fn display_report(window: &MainWindow, report: &AnalysisReport, report_dir: &std::path::Path) {
     window.set_status_text(format!("Готово · отчёт: {}", report_dir.display()).into());
     window.set_disk_text(
@@ -284,6 +301,8 @@ fn display_report(window: &MainWindow, report: &AnalysisReport, report_dir: &std
             } else {
                 format!("{:.1}%", summary.bytes as f64 * 100.0 / total as f64)
             }),
+            ratio: if total == 0 { 0.0 } else { summary.bytes as f32 / total as f32 },
+            color: category_swatch(name),
         })
         .collect::<Vec<_>>();
     window.set_category_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
@@ -330,15 +349,16 @@ fn display_report(window: &MainWindow, report: &AnalysisReport, report_dir: &std
             parent.files = parent.files.saturating_add(1);
         }
     }
+    TREE_CACHE.with(|cache| *cache.borrow_mut() = Some(tree));
     let mut rows = Vec::new();
-    flatten_tree(&tree, 0, &mut rows, 1200);
+    TREE_CACHE.with(|cache| if let Some(tree) = cache.borrow().as_ref() { flatten_tree(tree, 0, String::new(), &mut rows, &BTreeSet::new()); });
     window.set_tree_rows(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
     window.set_tiles(ModelRc::from(std::rc::Rc::new(VecModel::from(
         make_treemap(&report.files),
     ))));
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct TreeNode {
     name: String,
     is_file: bool,
@@ -363,10 +383,8 @@ impl TreeNode {
     }
 }
 
-fn flatten_tree(node: &TreeNode, depth: usize, rows: &mut Vec<TreeRow>, limit: usize) {
-    if rows.len() >= limit {
-        return;
-    }
+fn flatten_tree(node: &TreeNode, depth: usize, parent_key: String, rows: &mut Vec<TreeRow>, expanded: &BTreeSet<String>) {
+    let key = if parent_key.is_empty() { node.name.clone() } else { format!("{parent_key}/{}", node.name) };
     rows.push(TreeRow {
         name: SharedString::from(node.name.as_str()),
         kind: SharedString::from(if node.is_file {
@@ -379,12 +397,22 @@ fn flatten_tree(node: &TreeNode, depth: usize, rows: &mut Vec<TreeRow>, limit: u
         indent: (depth * 16) as f32,
         color: slint::Color::from_rgb_u8(if node.is_file { 126 } else { 122 }, if node.is_file { 153 } else { 133 }, if node.is_file { 177 } else { 106 }),
         is_file: node.is_file,
+        expandable: !node.children.is_empty(),
+        expanded: expanded.contains(&key) || depth == 0,
+        key: key.clone().into(),
     });
+    if depth > 0 && !expanded.contains(&key) { return; }
     let mut children: Vec<_> = node.children.values().collect();
     children.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.name.cmp(&b.name)));
     for child in children {
-        flatten_tree(child, depth + 1, rows, limit);
+        flatten_tree(child, depth + 1, key.clone(), rows, expanded);
     }
+}
+
+fn category_swatch(name: &str) -> slint::Color {
+    let colors = [(90,145,190),(81,157,126),(184,130,73),(151,111,190),(190,91,98),(67,150,163),(177,157,70),(93,151,91),(163,105,148),(107,134,190),(191,119,66),(92,117,160),(149,161,91),(157,101,98)];
+    let index = match name { "Видео"=>0,"Музыка"=>1,"Фото"=>2,"Документы"=>3,"Архивы"=>4,"Программы"=>5,"Игры"=>6,"Системные"=>7,"Скрипты"=>8,"Базы данных"=>9,"Веб-файлы"=>10,"Образы дисков"=>11,"Шрифты"=>12,"Логи"=>13,_=>0 };
+    let (r,g,b) = colors[index]; slint::Color::from_rgb_u8(r,g,b)
 }
 
 fn make_treemap(files: &[disk_analyzer::FileEntry]) -> Vec<Tile> {
