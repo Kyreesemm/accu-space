@@ -224,7 +224,7 @@ impl AnalysisReport {
         writer.write_all(&(self.discovered_files as u64).to_le_bytes())?;
         writer.write_all(&(self.processed_files as u64).to_le_bytes())?;
         writer.write_all(&(self.skipped_files as u64).to_le_bytes())?;
-        writer.write_all(&self.elapsed.as_millis().to_le_bytes())?;
+        writer.write_all(&(self.elapsed.as_millis() as u64).to_le_bytes())?;
 
         // Categories
         writer.write_all(&(self.categories.len() as u32).to_le_bytes())?;
@@ -943,6 +943,40 @@ mod tests {
     #[test]
     fn json_escaping_is_valid_for_basic_special_characters() {
         assert_eq!(json_string("a\\b\"c\n"), "\"a\\\\b\\\"c\\n\"");
+    }
+
+    #[test]
+    fn binary_report_roundtrip() {
+        let root = std::env::temp_dir();
+        let report = AnalysisReport {
+            root: root.clone(),
+            disk_usage: DiskUsage { total: 100, used: 50, free: 50 },
+            files: vec![
+                FileEntry {
+                    path: root.join("test.txt"),
+                    size: 10,
+                    category: "Документы".to_string(),
+                }
+            ],
+            categories: {
+                let mut map = BTreeMap::new();
+                map.insert("Документы".to_string(), CategorySummary { bytes: 10, files: 1 });
+                map
+            },
+            discovered_files: 1,
+            processed_files: 1,
+            skipped_files: 0,
+            elapsed: Duration::from_secs(1),
+        };
+
+        let temp_dar = root.join("test_report.dar");
+        report.save_binary(&temp_dar).unwrap();
+        let loaded = AnalysisReport::load_binary(&temp_dar).unwrap();
+        assert_eq!(loaded.root, report.root);
+        assert_eq!(loaded.disk_usage, report.disk_usage);
+        assert_eq!(loaded.files.len(), 1);
+        assert_eq!(loaded.files[0].size, 10);
+        let _ = fs::remove_file(temp_dar);
     }
 
     #[test]
