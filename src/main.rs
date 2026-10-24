@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use disk_analyzer::{
-    AnalysisReport, AnalyzeOptions, Analyzer, Progress, format_size, write_report,
+    AnalysisReport, AnalyzeOptions, Analyzer, Progress, discover_disks, format_size, write_report,
 };
 use slint::{ModelRc, SharedString, VecModel};
 
@@ -117,6 +117,9 @@ fn run() -> io::Result<()> {
 fn run_gui() -> io::Result<()> {
     let app = MainWindow::new().map_err(|error| io::Error::other(error.to_string()))?;
     let ui = app.as_weak();
+    let refresh_ui = ui.clone();
+    app.on_refresh_disks(move || refresh_disk_rows(&refresh_ui));
+    refresh_disk_rows(&ui);
     let browse_ui = ui.clone();
     app.on_choose_folder(move || {
         if let Some(path) = rfd::FileDialog::new().pick_folder()
@@ -223,6 +226,26 @@ fn run_gui() -> io::Result<()> {
 
     app.run()
         .map_err(|error| io::Error::other(error.to_string()))
+}
+
+fn refresh_disk_rows(ui: &slint::Weak<MainWindow>) {
+    if let Some(window) = ui.upgrade() {
+        match discover_disks() {
+            Ok(disks) => {
+                let rows = disks.into_iter().map(|disk| DiskRow {
+                    name: disk.name.into(),
+                    path: disk.path.to_string_lossy().into_owned().into(),
+                    kind: disk.filesystem.into(),
+                    total: format!("{} всего", format_size(disk.usage.total)).into(),
+                    used: format!("{} занято", format_size(disk.usage.used)).into(),
+                    free: format!("{} свободно", format_size(disk.usage.free)).into(),
+                    used_ratio: if disk.usage.total == 0 { 0.0 } else { disk.usage.used as f32 / disk.usage.total as f32 },
+                }).collect::<Vec<_>>();
+                window.set_disks(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
+            }
+            Err(error) => window.set_status_text(format!("Не удалось получить список дисков: {error}").into()),
+        }
+    }
 }
 
 fn display_report(window: &MainWindow, report: &AnalysisReport, report_dir: &std::path::Path) {
@@ -354,6 +377,8 @@ fn flatten_tree(node: &TreeNode, depth: usize, rows: &mut Vec<TreeRow>, limit: u
         size: SharedString::from(format_size(node.bytes)),
         files: SharedString::from(node.files.to_string()),
         indent: (depth * 16) as f32,
+        color: slint::Color::from_rgb_u8(if node.is_file { 126 } else { 122 }, if node.is_file { 153 } else { 133 }, if node.is_file { 177 } else { 106 }),
+        is_file: node.is_file,
     });
     let mut children: Vec<_> = node.children.values().collect();
     children.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.name.cmp(&b.name)));
@@ -363,20 +388,16 @@ fn flatten_tree(node: &TreeNode, depth: usize, rows: &mut Vec<TreeRow>, limit: u
 }
 
 fn make_treemap(files: &[disk_analyzer::FileEntry]) -> Vec<Tile> {
-    const MAX_TILES: usize = 60;
-    const COLORS: [(u8, u8, u8); 8] = [
-        (183, 211, 247),
-        (190, 226, 218),
-        (250, 215, 173),
-        (222, 207, 246),
-        (248, 193, 196),
-        (194, 220, 237),
-        (238, 221, 168),
-        (205, 220, 198),
+    const MAX_TILES: usize = 240;
+    const COLORS: [(u8, u8, u8); 14] = [
+        (57, 83, 104), (63, 96, 87), (112, 82, 53), (83, 70, 112),
+        (111, 63, 67), (49, 84, 101), (106, 91, 50), (67, 91, 62),
+        (93, 67, 84), (58, 91, 91), (103, 76, 55), (70, 77, 105),
+        (86, 93, 57), (101, 62, 91),
     ];
     let mut sorted: Vec<_> = files.iter().collect();
     sorted.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
-    let mut items: Vec<(String, u64)> = sorted
+    let mut items: Vec<(String, u64, usize)> = sorted
         .iter()
         .take(MAX_TILES - 1)
         .map(|file| {
@@ -385,7 +406,8 @@ fn make_treemap(files: &[disk_analyzer::FileEntry]) -> Vec<Tile> {
                     || file.path.display().to_string(),
                     |n| n.to_string_lossy().into_owned(),
                 ),
-                file.size.max(1),
+                file.size,
+                category_color(&file.category),
             )
         })
         .collect();
@@ -394,18 +416,18 @@ fn make_treemap(files: &[disk_analyzer::FileEntry]) -> Vec<Tile> {
         .skip(MAX_TILES - 1)
         .map(|file| file.size)
         .sum();
-    if other_size > 0 {
-        items.push(("Остальные файлы".to_string(), other_size));
+    if sorted.len() > MAX_TILES - 1 {
+        items.push(("Остальные файлы".to_string(), other_size, COLORS.len() - 1));
     }
     if items.is_empty() {
         return Vec::new();
     }
     let mut result = Vec::with_capacity(items.len());
-    let weights: Vec<u64> = items.iter().map(|(_, size)| *size).collect();
+    let weights: Vec<u64> = items.iter().map(|(_, size, _)| (*size).max(1)).collect();
     let colors = COLORS;
     #[allow(clippy::too_many_arguments)]
     fn subdivide(
-        items: &[(String, u64)],
+        items: &[(String, u64, usize)],
         weights: &[u64],
         start: usize,
         end: usize,
@@ -414,14 +436,14 @@ fn make_treemap(files: &[disk_analyzer::FileEntry]) -> Vec<Tile> {
         w: f32,
         h: f32,
         output: &mut Vec<Tile>,
-        colors: &[(u8, u8, u8); 8],
+        colors: &[(u8, u8, u8); 14],
     ) {
         if end <= start {
             return;
         }
         if end - start == 1 {
-            let (r, g, b) = colors[start % colors.len()];
-            let (label, size) = &items[start];
+            let (label, size, color_index) = &items[start];
+            let (r, g, b) = colors[*color_index % colors.len()];
             output.push(Tile {
                 x,
                 y,
@@ -443,8 +465,7 @@ fn make_treemap(files: &[disk_analyzer::FileEntry]) -> Vec<Tile> {
                 break;
             }
         }
-        let ratio = (weights[start..middle].iter().sum::<u64>() as f32 / total.max(1) as f32)
-            .clamp(0.08, 0.92);
+        let ratio = weights[start..middle].iter().sum::<u64>() as f32 / total.max(1) as f32;
         if w >= h {
             let split = w * ratio;
             subdivide(
@@ -495,6 +516,16 @@ fn make_treemap(files: &[disk_analyzer::FileEntry]) -> Vec<Tile> {
         &colors,
     );
     result
+}
+
+fn category_color(category: &str) -> usize {
+    match category {
+        "Системные" => 0, "Программы" => 1, "Игры" => 2, "Видео" => 3,
+        "Музыка" => 4, "Фото" => 5, "Документы" => 6, "Архивы" => 7,
+        "Базы данных" => 8, "Скрипты" => 9, "Веб-файлы" => 10,
+        "Образы дисков" => 11, "Шрифты" => 12, "Логи" => 13,
+        _ => 13,
+    }
 }
 
 fn format_duration(duration: Duration) -> String {

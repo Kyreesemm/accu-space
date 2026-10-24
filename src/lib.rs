@@ -82,6 +82,65 @@ pub struct DiskUsage {
     pub free: u64,
 }
 
+/// A mounted volume that can be inspected by the analyzer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountedDisk {
+    pub name: String,
+    pub path: PathBuf,
+    pub filesystem: String,
+    pub usage: DiskUsage,
+}
+
+/// List accessible local filesystems, excluding virtual and pseudo mounts.
+#[cfg(target_os = "linux")]
+pub fn discover_disks() -> io::Result<Vec<MountedDisk>> {
+    use std::collections::BTreeMap;
+    let mounts = std::fs::read_to_string("/proc/self/mounts")?;
+    let mut unique = BTreeMap::<PathBuf, MountedDisk>::new();
+    for line in mounts.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() < 3 { continue; }
+        let filesystem = fields[2];
+        if matches!(filesystem, "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" | "cgroup" | "cgroup2" | "securityfs" | "debugfs" | "tracefs" | "pstore" | "mqueue" | "hugetlbfs" | "fusectl" | "configfs" | "autofs" | "overlay" | "nsfs" | "rpc_pipefs") { continue; }
+        let decode = |s: &str| s.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\").replace("\\042", "\"");
+        let path = PathBuf::from(decode(fields[1]));
+        if !path.is_dir() { continue; }
+        let Ok(usage) = disk_usage(&path) else { continue; };
+        let name = path.file_name().filter(|n| !n.is_empty()).map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        unique.entry(path.clone()).or_insert(MountedDisk { name, path, filesystem: filesystem.to_string(), usage });
+    }
+    let mut result: Vec<_> = unique.into_values().collect();
+    result.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(result)
+}
+
+#[cfg(windows)]
+pub fn discover_disks() -> io::Result<Vec<MountedDisk>> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::ffi::OsString;
+    unsafe extern "system" {
+        fn GetLogicalDrives() -> u32;
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+    let bits = unsafe { GetLogicalDrives() };
+    let mut disks = Vec::new();
+    for index in 0..26 {
+        if bits & (1 << index) == 0 { continue; }
+        let letter = char::from(b'A' + index as u8);
+        let path = PathBuf::from(format!("{letter}:\\"));
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        // Skip removable optical media and disconnected/network paths; include fixed and mounted volumes.
+        if !matches!(unsafe { GetDriveTypeW(wide.as_ptr()) }, 2 | 3 | 6) { continue; }
+        let Ok(usage) = disk_usage(&path) else { continue; };
+        let name = OsString::from_wide(&[letter as u16]).to_string_lossy().into_owned();
+        disks.push(MountedDisk { name: format!("{name}:"), path, filesystem: "Том Windows".to_string(), usage });
+    }
+    Ok(disks)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn discover_disks() -> io::Result<Vec<MountedDisk>> { Ok(Vec::new()) }
+
 /// One successfully inspected file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
