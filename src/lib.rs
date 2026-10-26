@@ -147,7 +147,7 @@ pub fn discover_disks() -> io::Result<Vec<MountedDisk>> {
 
 #[cfg(windows)]
 pub fn discover_disks() -> io::Result<Vec<MountedDisk>> {
-    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::ffi::{OsStringExt, OsStrExt};
     use std::ffi::OsString;
     unsafe extern "system" {
         fn GetLogicalDrives() -> u32;
