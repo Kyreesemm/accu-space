@@ -996,7 +996,9 @@ pub fn scan_trash() -> io::Result<Vec<TrashItem>> {
             push_trash_item(&mut items, "paru_cache", "Кэш AUR (paru)", home.join(".cache/paru"), "Пакеты", "Загруженные пакеты и исходники AUR");
             push_trash_item(&mut items, "cargo_cache", "Кэш Cargo (~/.cargo/registry)", home.join(".cargo/registry/cache"), "Разработка", "Загруженные зависимости Rust");
             push_trash_item(&mut items, "npm_cache", "Кэш npm (~/.npm)", home.join(".npm"), "Разработка", "Кэш пакетного менеджера Node.js");
-            push_trash_item(&mut items, "pip_cache", "Кэш pip (~/.cache/pip)", home.join(".cache/pip"), "Разработка", "Кэш пакетов Python");
+            push_trash_item(&mut items, "pip_cache", "Кэш pip (~/.cache/pip)", home.join(".cache/pip"), "Разработка (Python)", "Кэш пакетов Python pip");
+            push_trash_item(&mut items, "uv_cache", "Кэш uv (~/.cache/uv)", home.join(".cache/uv"), "Разработка (Python)", "Кэш быстрого пакетного менеджера Python (uv)");
+            push_trash_item(&mut items, "poetry_cache", "Кэш Poetry (~/.cache/pypoetry)", home.join(".cache/pypoetry"), "Разработка (Python)", "Кэш менеджера зависимостей Poetry");
 
             let dev_roots = vec![
                 home.join("Projects"),
@@ -1080,19 +1082,21 @@ fn scan_dev_junk(root: &Path, items: &mut Vec<TrashItem>) {
             if ft.is_dir() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                if matches!(name_str.as_ref(), "node_modules" | "target" | "__pycache__" | ".pytest_cache" | ".mypy_cache" | "venv" | ".venv" | "env" | "dist" | "build" | ".next" | ".nuxt") {
+                if matches!(name_str.as_ref(), "node_modules" | "target" | "__pycache__" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache" | ".tox" | ".nox" | "venv" | ".venv" | "env" | "dist" | "build" | ".next" | ".nuxt") {
                     let path = entry.path();
                     let (size, file_count) = calculate_dir_size(&path);
                     if size > 0 {
                         let key = format!("dev_{}", path.to_string_lossy());
                         let parent_name = entry.path().parent().and_then(|p| p.file_name()).map_or("".to_string(), |n| n.to_string_lossy().into_owned());
+                        let is_python = matches!(name_str.as_ref(), "__pycache__" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache" | ".tox" | ".nox" | "venv" | ".venv" | "env");
+                        let category = if is_python { "Разработка (Python)" } else { "Разработка (артефакты)" };
                         items.push(TrashItem {
                             key,
                             name: format!("{} ({})", name_str, parent_name),
                             path,
                             size,
                             file_count,
-                            category: "Разработка (артефакты)".to_string(),
+                            category: category.to_string(),
                             description: format!("Директория {} в проекте", name_str),
                         });
                     }
