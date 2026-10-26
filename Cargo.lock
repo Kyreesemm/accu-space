@@ -127,6 +127,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "accu-space"
+version = "0.2.0"
+dependencies = [
+ "rfd",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -960,15 +969,6 @@ dependencies = [
  "rustc_version",
  "syn 2.0.119",
  "unicode-xid",
-]
-
-[[package]]
-name = "disk-analyzer"
-version = "0.2.0"
-dependencies = [
- "rfd",
- "slint",
- "slint-build",
 ]
 
 [[package]]

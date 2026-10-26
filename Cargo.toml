@@ -1,8 +1,9 @@
 [package]
-name = "disk-analyzer"
+name = "accu-space"
 version = "0.2.0"
 edition = "2024"
-description = "Cross-platform disk usage analysis library and command-line runner"
+authors = ["KRM Tech Software"]
+description = "Accu Space - Cross-platform disk analysis and cleanup application by KRM Tech Software"
 license = "MIT"
 build = "build.rs"
 
@@ -15,7 +16,7 @@ name = "disk_analyzer"
 path = "src/lib.rs"
 
 [[bin]]
-name = "disk-analyzer"
+name = "accu-space"
 path = "src/main.rs"
 
 [profile.release]
